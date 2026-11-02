@@ -32,6 +32,12 @@ Per target title, check:
 2. Presence of the SDK, by running the PS5X360 `NuiSkeletonGetNextFrame` signature over the code section and requiring exactly one match.
 3. The PsCam request codes seen in a Xenia trace.
 
+## The guest contract and a host plug-in point now exist
+
+- **[PSCAM_CONTRACT.md](PSCAM_CONTRACT.md)** is the request-by-request spec from PR #1274's code plus libfreenect's math. It covers depth as BE u16 with the low 11 bits set and no player-index bits, colour as 8-bit Bayer GRBG, and the code-24 table of 8192 entries. It also gives the inverse mm→raw formula, which I verified: exact at 0.8–1 m and ≤ 10 mm off at 3.5 m, the sensor's own quantization.
+- **The ryantimjohn fork's `NuiSystem`** (PRIOR_ART §3) takes depth in **millimetres** from a host backend and does the guest-format conversion itself.
+- **Neither path carries player-index bits.** The title's own tracker computes player pixels from depth, so our per-player masks matter only for Option B and for our own synthetic depth rendering.
+
 ## Preliminary injection decision (to confirm per title)
 
 1. **Build the `PsCamDeviceRequest` virtual sensor first.** It implements the #1274 contract, fed by the Virtual Kinect:

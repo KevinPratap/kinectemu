@@ -41,11 +41,32 @@ A real Kinect v1 drives **title 5345084D's own NUI library** inside Xenia, and "
 - Status codes for absent camera, cancelled read and bad range were chosen by the author, not taken from the console.
 - Also found: 5345084D's race steering reads the **depth image's player pixels**, so depth and player index matter even with skeleton injection.
 
-## 3. ryantimjohn/xenia-canary `add-kinect-support`
+## 3. ryantimjohn/xenia-canary `add-kinect-support` (head `8907f698`, cloned to `external/ryantimjohn-xenia`)
 
-- Issue #1290 (opened 2026-11-02) claims "Kinect support completely operational", about 30k lines, to be split into 11 stacked PRs.
-- Branch head `8907f698` (2026-10-11, "codex/kinect-pr-ready").
-- knuckleslee describes it as adding a **host-side NUI subsystem**, a different approach. Not read in detail yet.
+- Issue #1290 (opened 2026-11-02) claims "Kinect support completely operational" and promises 11 stacked PRs. None are open yet; the owner's #1291 and #1295 are unrelated and merged.
+- Compare against upstream: 152 files, +19,873/−413, 9 commits ahead and 88 behind. About 8k lines are tests. `third_party/` is unchanged and the code is BSD.
+  - Avoid its other branch `codex/dc3-kinect-integration-20261023`: it has commits marked "[Private] SDK-derived".
+- **Architecture: the same guest path as knuckleslee, a different host side.** The data path:
+  1. `PsCamDeviceRequest` (`kernel/xboxkrnl/xboxkrnl_nui.cc:25`, verified)
+  2. `NuiState::HandleCameraRequest`
+  3. `NuiCamera` (`kernel/xam/nui_camera.cc`)
+  4. The `NuiCamera` feed thread converts the newest host depth frame through the code-24 LUT into the guest ring.
+  5. The title's own SDK tracks on the emulated GPU.
+
+  There's no skeleton injection.
+- **Host plug-in point: abstract `xe::nui::NuiSystem`** (`nui/nui_system.h:39`, verified).
+  - A backend calls the protected `PublishFrame(std::shared_ptr<DepthFrame>)`.
+  - `DepthFrame` holds **`uint16` depth in millimetres**, 640×480, with 0 meaning no reading (`nui/depth_frame.h:33,44`, verified).
+  - Optional overrides: tilt and gravity (`GetTiltDegrees`, `SetTiltDegrees`, `GetGravityVector`, `IsTiltMotorMoving`). The title's tracker uses gravity (fork `docs/nui.md:199`).
+  - Backends: `kinect` (Kinect for Windows SDK 1.8, `Kinect10.dll` at runtime, depth only), `replay` (recorded depth, about 340 lines, the simplest template) and `nop`. Registered in `app/xenia_main.cc:494-510`.
+- **Colour is a constant black image** (`nui_camera.cc:874`, verified). Mic array, `McaDeviceRequest` and `DetroitDeviceRequest` aren't implemented.
+- **Evidence:**
+  - Its docs claim only title `4D5308ED`: boots, tracks a player, plays all five activities, which matches Kinect Adventures. The obstacle activity needs an external patch.
+  - Comments on #1290 also mention Dance Central 3 scoring, and one user reports about 15 fps on an RTX 3050.
+  - No logs are committed.
+- **Overlap with knuckleslee:** it has its own LDI and XamContentOpenFile. Its GPU resolve change infers the rectangle from destination extents (`gpu/draw_util.cc:1394-1420`, marked TODO) instead of #1280's CPU vertex-shader approach. Upstream will have to reconcile the two.
+
+**Consequence for us:** a webcam backend fits this design as one `NuiSystem` subclass that publishes synthetic depth in millimetres plus gravity. The fork handles the guest LUT, PsCam state machine and ring buffers. This is the shortest route to Option A′.
 
 ## 4. weronika-saturday/xenia-canary: why it "compiles but produces no frames"
 
