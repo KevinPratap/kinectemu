@@ -27,7 +27,7 @@ Last update: 2026-11-02. Current phase: **0 (feasibility)**. No feature code exi
 | 0-W webcam | partial | GPU 2-person path done, and slots are stable on the clip (0 switches). Still needs: a well-lit full-body re-run that includes players crossing, checkerboard intrinsics, and a latency test. The tooling for the last two is ready and self-tested (see "Waiting on the user" below). See WEBCAM_REPORT §7. |
 | 0-N NUI layer | partial | Xenia side and prior art done ([NUI_LAYER.md](NUI_LAYER.md), [PRIOR_ART.md](PRIOR_ART.md)). Per-title answers need the four targets' XEX files (from images of discs you own). |
 | 0-D disc | not applicable yet | The laptop has no optical drive (`Win32_CDROMDrive` is empty). Needs an external Xbox-compatible SATA drive. |
-| Build toolchain | **blocked** | Visual Studio 2022 with the "Desktop development with C++" workload is not installed; only the VS Installer is present. clang-format is also missing. Needed before Phase 1. |
+| Build toolchain | **pass** (2026-11-03) | Installed via winget:<br>• VS 2022 Community 17.14 with the C++ desktop workload (MSVC x64, CMake, Windows SDK 10.0.26100)<br>• LLVM 23.1.4 (clang-format)<br>• Vulkan SDK 1.4.363.0<br>Unmodified Canary `96ce1ac` builds in release in about 15 minutes total. `xenia_canary.exe` starts and logs `Build: canary_experimental@96ce1ac`. |
 
 ## Waiting on the user (about 10 minutes, tooling ready)
 Run these from the project root, using the venv's `python.exe`:
@@ -56,6 +56,8 @@ cd tools\phase0
 ```
 Converter venv: `python -m venv tools\.venv-convert`, then `pip install tensorflow-cpu==2.15.1 tf2onnx==1.16.1 "numpy<2" onnx onnxruntime "opencv-python-headless<4.11"`. Extract the `.task` file (it's a zip) into `models\mp-pose-<v>\extracted\`.
 
+Xenia build (from `external\xenia-canary`): `git submodule update --init --depth 1 --recursive`, then `python xenia-build.py premake` and `python xenia-build.py build --config=release`. Output: `build\bin\Windows\Release\xenia_canary.exe`.
+
 Venv: `python -m venv tools\.venv`, then `pip install onnxruntime-directml numpy opencv-contrib-python pygrabber mediapipe tqdm` and `pip install --no-deps rtmlib`.
 
 ## Tried and failed (don't retry)
@@ -66,4 +68,5 @@ Venv: `python -m venv tools\.venv`, then `pip install onnxruntime-directml numpy
 - **Building the tracking crop from the landmark bounding box:** the crop collapses onto the face within about 9 frames for a seated person. Use MediaPipe's aux landmarks 33 and 34 (×2.5 square).
 - **Running RTMO every frame on the 4050 next to the landmark model:** 43–55 ms p50, over budget. Run it async, at a low rate.
 - **A host-side `NuiSkeletonGetNextFrame` export, or PsCam/Mca/Detroit stubs that return success with no data** (weronika-saturday fork): titles never call the former, and the latter makes the title wait forever for frames. Deliver frames through `PsCamDeviceRequest`, or hook the title's own SDK function.
+- **Building Xenia without the Vulkan SDK:** `building.md` calls it optional, but the build stops at `xenia-ui-vulkan_spirv.stamp` with `FileNotFoundError`, because shader compilation needs the SDK's tools. Install the SDK at `C:\VulkanSDK`.
 - **OpenCV MSMF backend with an MJPG request:** the fourcc isn't honoured. Irrelevant to the production `IMFSourceReader` path.
