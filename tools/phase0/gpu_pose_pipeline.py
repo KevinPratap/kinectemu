@@ -14,6 +14,7 @@ Usage:
 import argparse
 import json
 import math
+import statistics
 import time
 from pathlib import Path
 
@@ -108,7 +109,7 @@ class GpuPosePipeline:
         self.lm = dml_session(models / f"mp-pose-{variant}" / f"pose_landmarks_{variant}.onnx", device)
         self.lm_out = [o.name for o in self.lm.get_outputs()]
         self.mask_size = mask_size
-        self.tracks = []  # list of (center, half, angle)
+        self.tracks = []  # list of (slot, (center, half, angle)); slot = Kinect player index - 1
 
     def landmarks(self, frame, roi):
         m = roi_affine(*roi)
@@ -126,26 +127,31 @@ class GpuPosePipeline:
                 "world": world[0].reshape(39, 3), "mask": mask}
 
     def merge_detections(self, rois):
-        """Add detected people that no current track covers, up to MAX_PLAYERS."""
+        """Give detected people that no current track covers the lowest free slot.
+        A tracked player keeps its slot for as long as its track survives."""
         for roi in rois:
-            if len(self.tracks) >= MAX_PLAYERS:
+            used = {s for s, _ in self.tracks}
+            free = [s for s in range(MAX_PLAYERS) if s not in used]
+            if not free:
                 break
-            if all(np.hypot(*(roi[0] - t[0])) > 0.5 * t[1] for t in self.tracks):
-                self.tracks.append(roi)
+            if all(np.hypot(*(roi[0] - t[0])) > 0.5 * t[1] for _, t in self.tracks):
+                self.tracks.append((free[0], roi))
 
     def process(self, frame, run_detector):
         if run_detector or not self.tracks:
-            self.tracks = self.detect(frame)
+            self.tracks = []
+            self.merge_detections(self.detect(frame))
         return self.track(frame)
 
     def track(self, frame):
         people, next_tracks = [], []
-        for roi in self.tracks:
+        for slot, roi in self.tracks:
             p = self.landmarks(frame, roi)
             if p["present"] < 0.5:
                 continue
+            p["slot"] = slot
             people.append(p)
-            next_tracks.append(roi_from_aux(p["xy"]))
+            next_tracks.append((slot, roi_from_aux(p["xy"])))
         self.tracks = next_tracks
         return people
 
@@ -195,9 +201,9 @@ class DetectorWorker:
 
 def draw(frame, people, path):
     out = frame.copy()
-    for k, p in enumerate(people):
+    for p in people:
         m = cv2.resize(p["mask"], (frame.shape[1], frame.shape[0])) > 0.5
-        out[m] = (0.5 * out[m] + 0.5 * np.array(PLAYER_COLORS[k % 2])).astype(np.uint8)
+        out[m] = (0.5 * out[m] + 0.5 * np.array(PLAYER_COLORS[p["slot"]])).astype(np.uint8)
         pts = [tuple(int(v) for v in xy) for xy in p["xy"]]
         for a, b in MP_EDGES:
             cv2.line(out, pts[a], pts[b], (0, 255, 255), 3)
@@ -230,7 +236,7 @@ def bench_async(pipe, detector, frames, interval, frame_period_s=1 / 30, overlay
     for f in frames[:30]:
         pipe.track(f)
     pipe.tracks = []
-    times, persons, slips = [], [], 0
+    times, persons, slips, slot_log = [], [], 0, []
     next_t = time.perf_counter()
     for i, f in enumerate(frames):
         if i % interval == 0 or len(pipe.tracks) < MAX_PLAYERS and i % 3 == 0:
@@ -243,6 +249,8 @@ def bench_async(pipe, detector, frames, interval, frame_period_s=1 / 30, overlay
         dt = time.perf_counter() - t0
         times.append(dt * 1000.0)
         persons.append(len(people))
+        # Hip-centre x per slot, to check a slot keeps following the same person.
+        slot_log.append({p["slot"]: round(float(p["xy"][33][0]), 1) for p in people})
         if overlay_dir is not None and i in (59, 119, 179):
             draw(f, people, overlay_dir / f"gpu_{tag}_{i:05d}.jpg")
         next_t += frame_period_s
@@ -254,7 +262,26 @@ def bench_async(pipe, detector, frames, interval, frame_period_s=1 / 30, overlay
     worker.close()
     r = stats(times, persons)
     r.update({"frames_over_budget": slips, "detector_busy_drops": worker.busy_drops})
+    r.update(slot_stability(slot_log))
     return r
+
+
+def slot_stability(slot_log, jump_px=150.0):
+    """A slot 'switches person' when its hip x jumps more than jump_px between
+    consecutive frames it is present in (players here are ~400 px apart)."""
+    first_seen, switches, dropouts, last_x = {}, 0, 0, {}
+    for i, frame_slots in enumerate(slot_log):
+        for slot, x in frame_slots.items():
+            first_seen.setdefault(slot, i)
+            if slot in last_x and abs(x - last_x[slot]) > jump_px:
+                switches += 1
+            last_x[slot] = x
+        if i > 0:
+            dropouts += len(set(slot_log[i - 1]) - set(frame_slots))
+    return {"slot_first_frame": first_seen, "slot_person_switches": switches,
+            "slot_dropouts": dropouts,
+            "slot_mean_hip_x": {s: round(statistics.mean(f[s] for f in slot_log if s in f), 1)
+                                for s in first_seen}}
 
 
 def main():

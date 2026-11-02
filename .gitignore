@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 tools/.venv-convert/
 onnxruntime_profile_*.json
+external/

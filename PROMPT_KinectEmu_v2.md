@@ -26,6 +26,16 @@ Fork **Xenia Canary** into **KinectEmu** so that Xbox 360 Kinect titles are **pl
 - Every `XamNui*` stub in Xenia's kernel module, plus Xenia's `vfs::Device`, `DiscImageDevice` and GDFX code.
 - Kinect for Windows SDK v1.8 docs: `NUI_SKELETON_FRAME`, `NUI_SKELETON_DATA`, the 20-joint `NUI_SKELETON_POSITION_INDEX`, `vFloorClipPlane`, and depth/player-index packing. Use these as reference for joint semantics. Phase 0 must confirm what the 360 actually uses.
 
+**Upstream state as of 2026-11-02** (see `docs/PRIOR_ART.md`):
+- Titles take frames through the kernel export `PsCamDeviceRequest` and track the skeleton in their own linked SDK, on the guest GPU.
+- Canary PR #1274 documents the PsCam contract:
+  - depth: raw 11-bit disparity, 640×480
+  - colour: Bayer 640×480
+  - code 24: disparity→mm table
+  - code 14: registration
+- #1280 (open) adds the GPU resolves the title's tracker needs.
+- Build the virtual sensor as a PsCam driver on that contract, and rebase on these PRs rather than diverging.
+
 ## Non-goals
 Kinect v2 · Xbox One/Series · Xbox Live / DLC / achievements · disc ripping tools · rewriting Xenia's CPU/GPU core · training new ML models (use pretrained models only) · any network access at runtime.
 

@@ -3,7 +3,7 @@
 Machine: HP Victus 15-fa1xxx, i7-12650H, RTX 4050 Laptop (driver 592.82), Intel UHD, 32 GB, on AC power, "High performance" plan.
 Date of measurements: 2026-11-02. Raw data: [data/webcam_probe.json](data/webcam_probe.json), [data/exposure_sweep.json](data/exposure_sweep.json), [data/pose_bench.json](data/pose_bench.json).
 
-**Gate verdict: NOT YET PASSED.** Two-person 3D joints plus per-player masks run on the GPU at p95 about 21 ms (§6). Still open: 30 fps capture in this room's light (§5), camera intrinsics, glass-to-skeleton latency and player-slot stability (§7).
+**Gate verdict: NOT YET PASSED.** Two-person 3D joints plus per-player masks run on the GPU at p95 about 21 ms (§6). Player slots are stable on the recorded clip (§6). Still open: 30 fps capture in this room's light (§5), camera intrinsics, glass-to-skeleton latency, and slot stability when players cross (§7).
 
 ## 1. Capture devices (DirectShow enumeration)
 
@@ -157,7 +157,11 @@ Findings:
 - **My first tracking rule was wrong.** Building the next crop from the landmark bounding box made the seated person's crop collapse onto the chin within about 9 frames, a feedback loop. Using aux landmarks 33 and 34 (MediaPipe's rule) fixed it.
 - **Two threads running DirectML on the same adapter crashed the process** (exit code 5, no traceback). RTMO on the iGPU thread plus landmarks on the 4050 is stable. The C++ implementation must either keep one submitting thread per adapter or put the detector on its own adapter or queue. Recorded in STATUS under "don't retry".
 - **Python's GIL inflates these numbers.** The tracker and the detector's CPU pre/post share it, so the async p50 (14.9 ms) is above the serial track-only p50 (about 7–10 ms). The C++ version should come in lower.
-- **Not yet verified:** that each person keeps the same player slot for the whole run. Slot order differs between runs, as expected. Within-run stability needs a per-frame slot log, which is Phase 3 requirement 1.
+- **Player slots are stable on this clip.** Tracks now carry a fixed slot (Kinect player index − 1), and a new detection takes the lowest free slot.
+  - Both players were acquired by frame 3–6, with **0 slot-person switches and 0 dropouts** over 239 frames in both variants.
+  - Slot 0 follows the standing person (mean hip x ≈ 882–886) and slot 1 the seated one (440–456).
+  - **Not covered:** players crossing or occluding each other, or leaving and re-entering. Test that in the well-lit re-run.
+- **Run-to-run variance is real.** A second run of the same benchmark gave async p95 of 16.0 ms (lite) and 18.5 ms (full), against 21.2 and 21.6 ms in the table, and serial detect-every-frame dropped from about 55 to about 28 ms. Report ranges, and re-measure under Xenia load.
 
 **Recommended inference layout for Phase 3:**
 - Tracker: MediaPipe landmarks **lite or full** on the **RTX 4050**, every frame.
