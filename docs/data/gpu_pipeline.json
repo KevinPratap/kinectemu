@@ -1,0 +1,76 @@
+{
+  "frames": 239,
+  "fixture": "..\\..\\fixtures\\fullbody_01",
+  "results": [
+    {
+      "n": 239,
+      "p50_ms": 54.91,
+      "p95_ms": 68.65,
+      "max_ms": 92.1,
+      "mean_persons": 2,
+      "detector_runs": 239,
+      "variant": "lite",
+      "mode": "detect-every-frame",
+      "device": 1
+    },
+    {
+      "n": 239,
+      "p50_ms": 10.33,
+      "p95_ms": 50.39,
+      "max_ms": 74.02,
+      "mean_persons": 2,
+      "detector_runs": 24,
+      "variant": "lite",
+      "mode": "track",
+      "device": 1
+    },
+    {
+      "n": 239,
+      "p50_ms": 14.93,
+      "p95_ms": 21.19,
+      "max_ms": 25.6,
+      "mean_persons": 1.92,
+      "frames_over_budget": 7,
+      "detector_busy_drops": 2,
+      "variant": "lite",
+      "mode": "async-detector, 30 Hz paced",
+      "device": 1,
+      "detector_device": 0
+    },
+    {
+      "n": 239,
+      "p50_ms": 52.92,
+      "p95_ms": 66.24,
+      "max_ms": 95.56,
+      "mean_persons": 2,
+      "detector_runs": 239,
+      "variant": "full",
+      "mode": "detect-every-frame",
+      "device": 1
+    },
+    {
+      "n": 239,
+      "p50_ms": 11.45,
+      "p95_ms": 53.09,
+      "max_ms": 90.01,
+      "mean_persons": 2,
+      "detector_runs": 24,
+      "variant": "full",
+      "mode": "track",
+      "device": 1
+    },
+    {
+      "n": 239,
+      "p50_ms": 17.3,
+      "p95_ms": 21.58,
+      "max_ms": 29.82,
+      "mean_persons": 1.97,
+      "frames_over_budget": 7,
+      "detector_busy_drops": 0,
+      "variant": "full",
+      "mode": "async-detector, 30 Hz paced",
+      "device": 1,
+      "detector_device": 0
+    }
+  ]
+}

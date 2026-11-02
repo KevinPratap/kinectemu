@@ -1,0 +1,131 @@
+{
+  "adapters": [
+    {
+      "device_id": 0,
+      "name": "Intel(R) UHD Graphics",
+      "vram_mb": 128,
+      "software": false
+    },
+    {
+      "device_id": 1,
+      "name": "NVIDIA GeForce RTX 4050 Laptop GPU",
+      "vram_mb": 5920,
+      "software": false
+    },
+    {
+      "device_id": 2,
+      "name": "Intel(R) UHD Graphics",
+      "vram_mb": 128,
+      "software": false
+    },
+    {
+      "device_id": 3,
+      "name": "Microsoft Basic Render Driver",
+      "vram_mb": 0,
+      "software": true
+    }
+  ],
+  "frames": 150,
+  "frame_size": "1280x720",
+  "results": [
+    {
+      "n": 150,
+      "p50_ms": 132.56,
+      "p95_ms": 807.91,
+      "max_ms": 880.38,
+      "mean_persons": 1.01,
+      "model": "rtmo-s",
+      "device": "cpu"
+    },
+    {
+      "n": 150,
+      "p50_ms": 82.13,
+      "p95_ms": 109.51,
+      "max_ms": 114.69,
+      "mean_persons": 1.01,
+      "model": "rtmo-s",
+      "device": "Intel(R) UHD Graphics"
+    },
+    {
+      "n": 150,
+      "p50_ms": 37.87,
+      "p95_ms": 42.03,
+      "max_ms": 61.62,
+      "mean_persons": 1.01,
+      "model": "rtmo-s",
+      "device": "NVIDIA GeForce RTX 4050 Laptop GPU"
+    },
+    {
+      "n": 150,
+      "p50_ms": 89.0,
+      "p95_ms": 92.81,
+      "max_ms": 129.47,
+      "mean_persons": 1.01,
+      "model": "rtmo-s",
+      "device": "Intel(R) UHD Graphics"
+    },
+    {
+      "n": 150,
+      "p50_ms": 1230.66,
+      "p95_ms": 1389.02,
+      "max_ms": 2303.08,
+      "mean_persons": 1,
+      "model": "rtmo-m",
+      "device": "cpu"
+    },
+    {
+      "n": 150,
+      "p50_ms": 150.59,
+      "p95_ms": 153.33,
+      "max_ms": 187.61,
+      "mean_persons": 1,
+      "model": "rtmo-m",
+      "device": "Intel(R) UHD Graphics"
+    },
+    {
+      "n": 150,
+      "p50_ms": 41.73,
+      "p95_ms": 44.12,
+      "max_ms": 65.54,
+      "mean_persons": 1,
+      "model": "rtmo-m",
+      "device": "NVIDIA GeForce RTX 4050 Laptop GPU"
+    },
+    {
+      "n": 150,
+      "p50_ms": 152.9,
+      "p95_ms": 159.79,
+      "max_ms": 215.86,
+      "mean_persons": 1,
+      "model": "rtmo-m",
+      "device": "Intel(R) UHD Graphics"
+    },
+    {
+      "n": 150,
+      "p50_ms": 24.6,
+      "p95_ms": 25.31,
+      "max_ms": 26.15,
+      "mean_persons": 0,
+      "model": "mp-pose-lite",
+      "device": "cpu (mediapipe tflite)"
+    },
+    {
+      "n": 150,
+      "p50_ms": 24.59,
+      "p95_ms": 25.89,
+      "max_ms": 29.32,
+      "mean_persons": 0,
+      "model": "mp-pose-full",
+      "device": "cpu (mediapipe tflite)"
+    },
+    {
+      "n": 150,
+      "p50_ms": 24.65,
+      "p95_ms": 25.98,
+      "max_ms": 26.96,
+      "mean_persons": 0,
+      "model": "mp-pose-heavy",
+      "device": "cpu (mediapipe tflite)"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+tools/.venv/
+fixtures/
+models/
+__pycache__/
+*.pyc
+tools/.venv-convert/
+onnxruntime_profile_*.json

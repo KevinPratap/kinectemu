@@ -1,0 +1,400 @@
+{
+  "devices": [
+    {
+      "index": 0,
+      "name": "DroidCam Source 3",
+      "formats": [
+        {
+          "width": 640,
+          "height": 480,
+          "subtype": "RGB24",
+          "min_fps": 29.97,
+          "max_fps": 1.0
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "name": "HP Wide Vision HD Camera",
+      "formats": [
+        {
+          "width": 1280,
+          "height": 720,
+          "subtype": "MJPG",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 176,
+          "height": 144,
+          "subtype": "MJPG",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "subtype": "MJPG",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 352,
+          "height": 288,
+          "subtype": "MJPG",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "subtype": "MJPG",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 640,
+          "height": 480,
+          "subtype": "MJPG",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 640,
+          "height": 360,
+          "subtype": "YUY2",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 176,
+          "height": 144,
+          "subtype": "YUY2",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 320,
+          "height": 240,
+          "subtype": "YUY2",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 352,
+          "height": 288,
+          "subtype": "YUY2",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        },
+        {
+          "width": 640,
+          "height": 480,
+          "subtype": "YUY2",
+          "min_fps": 30.0,
+          "max_fps": 30.0
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "name": "OMEN Cam \uff06 Voice",
+      "formats": [
+        {
+          "width": 640,
+          "height": 480,
+          "subtype": "RGB24",
+          "min_fps": 60.0,
+          "max_fps": 0.2
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "name": "DroidCam Source 2",
+      "formats": [
+        {
+          "width": 640,
+          "height": 480,
+          "subtype": "RGB24",
+          "min_fps": 30.0,
+          "max_fps": 1.0
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "name": "OBS Virtual Camera",
+      "formats": [],
+      "error": "KeyError('{30323449-0000-0010-8000-00AA00389B71}')"
+    }
+  ],
+  "target": "HP Wide Vision HD Camera",
+  "seconds_per_run": 15.0,
+  "runs": [
+    {
+      "backend": "MSMF",
+      "mode": "640x480",
+      "exposure_mode": "auto",
+      "requested_exposure": null,
+      "readback": {
+        "width": 640,
+        "height": 480,
+        "reported_fps": 30.0,
+        "fourcc": "\u0016\u0000\u0000\u0000",
+        "auto_exposure": 0.0,
+        "exposure": -5.0
+      },
+      "frames": 451,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.1,
+      "frame_ms_p95": 49.09,
+      "frame_ms_max": 80.3,
+      "late_frames_over_40ms": 60,
+      "mean_luma": 62.2
+    },
+    {
+      "backend": "MSMF",
+      "mode": "640x480",
+      "exposure_mode": "locked_-5",
+      "requested_exposure": -5,
+      "readback": {
+        "width": 640,
+        "height": 480,
+        "reported_fps": 30.0,
+        "fourcc": "\u0016\u0000\u0000\u0000",
+        "auto_exposure": 0.0,
+        "exposure": -5.0
+      },
+      "frames": 451,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.04,
+      "frame_ms_p95": 48.15,
+      "frame_ms_max": 50.07,
+      "late_frames_over_40ms": 38,
+      "mean_luma": 1.7
+    },
+    {
+      "backend": "MSMF",
+      "mode": "640x480",
+      "exposure_mode": "locked_-6",
+      "requested_exposure": -6,
+      "readback": {
+        "width": 640,
+        "height": 480,
+        "reported_fps": 30.0,
+        "fourcc": "\u0016\u0000\u0000\u0000",
+        "auto_exposure": 0.0,
+        "exposure": -5.0
+      },
+      "frames": 451,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.05,
+      "frame_ms_p95": 47.86,
+      "frame_ms_max": 49.58,
+      "late_frames_over_40ms": 38,
+      "mean_luma": 1.9
+    },
+    {
+      "backend": "MSMF",
+      "mode": "1280x720",
+      "exposure_mode": "auto",
+      "requested_exposure": null,
+      "readback": {
+        "width": 1280,
+        "height": 720,
+        "reported_fps": 30.0,
+        "fourcc": "\u0016\u0000\u0000\u0000",
+        "auto_exposure": 0.0,
+        "exposure": -5.0
+      },
+      "frames": 450,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.04,
+      "frame_ms_p95": 49.89,
+      "frame_ms_max": 79.52,
+      "late_frames_over_40ms": 59,
+      "mean_luma": 57.1
+    },
+    {
+      "backend": "MSMF",
+      "mode": "1280x720",
+      "exposure_mode": "locked_-5",
+      "requested_exposure": -5,
+      "readback": {
+        "width": 1280,
+        "height": 720,
+        "reported_fps": 30.0,
+        "fourcc": "\u0016\u0000\u0000\u0000",
+        "auto_exposure": 0.0,
+        "exposure": -5.0
+      },
+      "frames": 451,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.11,
+      "frame_ms_p95": 47.87,
+      "frame_ms_max": 49.61,
+      "late_frames_over_40ms": 39,
+      "mean_luma": 2.0
+    },
+    {
+      "backend": "MSMF",
+      "mode": "1280x720",
+      "exposure_mode": "locked_-6",
+      "requested_exposure": -6,
+      "readback": {
+        "width": 1280,
+        "height": 720,
+        "reported_fps": 30.0,
+        "fourcc": "\u0016\u0000\u0000\u0000",
+        "auto_exposure": 0.0,
+        "exposure": -5.0
+      },
+      "frames": 450,
+      "read_failures": 0,
+      "fps": 29.99,
+      "frame_ms_p50": 32.12,
+      "frame_ms_p95": 47.58,
+      "frame_ms_max": 58.03,
+      "late_frames_over_40ms": 56,
+      "mean_luma": 1.9
+    },
+    {
+      "backend": "DSHOW",
+      "mode": "640x480",
+      "exposure_mode": "auto",
+      "requested_exposure": null,
+      "readback": {
+        "width": 640,
+        "height": 480,
+        "reported_fps": 30.00003000003,
+        "fourcc": "YUY2",
+        "auto_exposure": -1.0,
+        "exposure": -6.0
+      },
+      "frames": 450,
+      "read_failures": 0,
+      "fps": 29.92,
+      "frame_ms_p50": 32.02,
+      "frame_ms_p95": 47.98,
+      "frame_ms_max": 48.47,
+      "late_frames_over_40ms": 41,
+      "mean_luma": 70.0
+    },
+    {
+      "backend": "DSHOW",
+      "mode": "640x480",
+      "exposure_mode": "locked_-5",
+      "requested_exposure": -5,
+      "readback": {
+        "width": 640,
+        "height": 480,
+        "reported_fps": 30.00003000003,
+        "fourcc": "YUY2",
+        "auto_exposure": -1.0,
+        "exposure": -5.0
+      },
+      "frames": 450,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.02,
+      "frame_ms_p95": 47.96,
+      "frame_ms_max": 48.58,
+      "late_frames_over_40ms": 39,
+      "mean_luma": 1.5
+    },
+    {
+      "backend": "DSHOW",
+      "mode": "640x480",
+      "exposure_mode": "locked_-6",
+      "requested_exposure": -6,
+      "readback": {
+        "width": 640,
+        "height": 480,
+        "reported_fps": 30.00003000003,
+        "fourcc": "YUY2",
+        "auto_exposure": -1.0,
+        "exposure": -6.0
+      },
+      "frames": 450,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.02,
+      "frame_ms_p95": 47.97,
+      "frame_ms_max": 48.83,
+      "late_frames_over_40ms": 38,
+      "mean_luma": 2.0
+    },
+    {
+      "backend": "DSHOW",
+      "mode": "1280x720",
+      "exposure_mode": "auto",
+      "requested_exposure": null,
+      "readback": {
+        "width": 1280,
+        "height": 720,
+        "reported_fps": 30.00003000003,
+        "fourcc": "MJPG",
+        "auto_exposure": -1.0,
+        "exposure": -6.0
+      },
+      "frames": 446,
+      "read_failures": 0,
+      "fps": 29.71,
+      "frame_ms_p50": 32.01,
+      "frame_ms_p95": 48.09,
+      "frame_ms_max": 138.34,
+      "late_frames_over_40ms": 49,
+      "mean_luma": 71.7
+    },
+    {
+      "backend": "DSHOW",
+      "mode": "1280x720",
+      "exposure_mode": "locked_-5",
+      "requested_exposure": -5,
+      "readback": {
+        "width": 1280,
+        "height": 720,
+        "reported_fps": 30.00003000003,
+        "fourcc": "MJPG",
+        "auto_exposure": -1.0,
+        "exposure": -5.0
+      },
+      "frames": 450,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.02,
+      "frame_ms_p95": 47.96,
+      "frame_ms_max": 49.28,
+      "late_frames_over_40ms": 38,
+      "mean_luma": 2.1
+    },
+    {
+      "backend": "DSHOW",
+      "mode": "1280x720",
+      "exposure_mode": "locked_-6",
+      "requested_exposure": -6,
+      "readback": {
+        "width": 1280,
+        "height": 720,
+        "reported_fps": 30.00003000003,
+        "fourcc": "MJPG",
+        "auto_exposure": -1.0,
+        "exposure": -6.0
+      },
+      "frames": 450,
+      "read_failures": 0,
+      "fps": 29.98,
+      "frame_ms_p50": 32.03,
+      "frame_ms_p95": 47.84,
+      "frame_ms_max": 49.34,
+      "late_frames_over_40ms": 39,
+      "mean_luma": 2.2
+    }
+  ]
+}
