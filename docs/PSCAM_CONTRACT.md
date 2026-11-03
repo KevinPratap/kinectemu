@@ -672,3 +672,43 @@ A synthetic sensor must, to satisfy this contract (all items from sections 1 to 
     (27, 35, 24, 33, 13, 14, 25, 5) agree on membership but not necessarily on a hard dependency order.
 13. Real-device `const_shift`, zero-plane values and registration words are not published in the sources read; the
     defaults in 5.5 are plausible rather than authoritative.
+
+---
+
+## 8. Second implementation: the ryantimjohn fork, from disassembly of 4D5308ED
+
+Source: `external/ryantimjohn-xenia` @ `8907f698`, `docs/nui.md` "Pixel format" and "Calibration source"
+(lines 1406-1613), and `src/xenia/nui/nui_depth_convert.h`. Read 2026-11-03. The fork works this out by
+disassembling one title, not from console documentation.
+
+**A virtual sensor doesn't need libfreenect's disparity curve.** The fork controls both the ring values
+and the code-24 table, and the two only have to agree. Its encoding:
+- **Ring:** BE u16, low-aligned, no player-index bits (same as section 4). Raw **2000..3999 carry
+  4000..400 mm** on a hyperbola. Raw 0 means no reading, as does anything from 4000 up.
+- **Code 24:** entry `i` = the depth in **millimetres** for raw `i`, unsigned. It's 0 outside 2000..3999.
+  The tracker loads it with `lhzx` and uses it directly as `z`. Entries above 3999 become the sentinel 8000.
+- **Code 13:** answered as version 5.1, so the title takes the code-14 path.
+- **Code 14:** `a=1, b=-30007.50375187594, c=-320.2800900450226, d=0.1, w=640, h=480`. The registration
+  integers are zeroed.
+  - The runtime builds `LUT[i] = trunc(16*(d*k*h*(1 - b*k*h/(i*k)) + c))` from these, with
+    `k = 1/((w/640)*h*a)`.
+  - The fork reads that table as feeding only the depth-to-colour registration shaders
+    (`g_SensorDepthToRegistrationXShift`), not the classifier.
+  - Its entries are read signed, so the unit has to be at least about 2 mm. The fork chose centimetres
+    (`kLutUnitsPerMm = 0.1`) by deduction, not observation.
+- **Orientation:** every row is mirrored (`639 - c`) relative to Kinect for Windows depth. Unmirrored
+  rows made the hand cursor move the wrong way in X.
+
+This partly answers open question 3: 8192 entries suit a 13-bit index, but the fork never uses more than
+12 bits. **For us it means our synthetic mm depth can use the fork's encoding unchanged.** Section 5.6's
+libfreenect inverse is only needed if a title turns out to check the curve's shape.
+
+**Tracker constraints that matter for synthetic depth.** The fork read these from the title's 80x60
+CPU pass. They are the shape our Virtual Kinect must hit:
+- A standing player is accepted at **1800..2920 mm**. The webcam's metric placement has to put players
+  in this band (or rescale them into it).
+- The torso must be **50..300 mm deep**, so a flat cut-out silhouette fails. The body proxy needs depth
+  relief.
+- The silhouette area must be **0.2..2 m²**, computed with a depth focal length of **583.3 px** at
+  640x480. Synthetic depth must be rendered with those intrinsics, not the webcam's.
+- Depth is valid only at **1..3999 mm**. Background at 4 m or more reads as no reading.

@@ -27,7 +27,7 @@ Last update: 2026-11-02. Current phase: **0 (feasibility)**. No feature code exi
 | 0-W webcam | partial | GPU 2-person path done, and slots are stable on the clip (0 switches). Still needs: a well-lit full-body re-run that includes players crossing, checkerboard intrinsics, and a latency test. The tooling for the last two is ready and self-tested (see "Waiting on the user" below). See WEBCAM_REPORT §7. |
 | 0-N NUI layer | partial | Xenia side and prior art done ([NUI_LAYER.md](NUI_LAYER.md), [PRIOR_ART.md](PRIOR_ART.md)). Per-title answers need the four targets' XEX files (from images of discs you own). |
 | 0-D disc | not applicable yet | The laptop has no optical drive (`Win32_CDROMDrive` is empty). Needs an external Xbox-compatible SATA drive. |
-| Build toolchain | **pass** (2026-11-03) | Installed via winget:<br>• VS 2022 Community 17.14 with the C++ desktop workload (MSVC x64, CMake, Windows SDK 10.0.26100)<br>• LLVM 23.1.4 (clang-format)<br>• Vulkan SDK 1.4.363.0<br>Unmodified Canary `96ce1ac` builds in release in about 15 minutes total. `xenia_canary.exe` starts and logs `Build: canary_experimental@96ce1ac`. |
+| Build toolchain | **pass** (2026-11-03) | Installed via winget:<br>• VS 2022 Community 17.14 with the C++ desktop workload (MSVC x64, CMake, Windows SDK 10.0.26100)<br>• LLVM 23.1.4 (clang-format)<br>• Vulkan SDK 1.4.363.0<br>Unmodified Canary `96ce1ac` builds in release in about 15 minutes total. `xenia_canary.exe` starts and logs `Build: canary_experimental@96ce1ac`. **Correction (2026-11-03):** that first launch was actually stuck at Xenia's one-time first-run disclaimer dialog (`emulator.cc:150`). The dialog is now answered (No, with the user's OK).<br>With it out of the way, the ryantimjohn fork build initialises the full core, and its replay backend streams `xdepth_writer.py --demo` frames to the guest device, logging `NUI: 300 depth frames replayed` (PRIOR_ART "Built and tested here"). |
 
 ## Waiting on the user (about 10 minutes, tooling ready)
 Run these from the project root, using the venv's `python.exe`:
@@ -57,6 +57,11 @@ cd tools\phase0
 Converter venv: `python -m venv tools\.venv-convert`, then `pip install tensorflow-cpu==2.15.1 tf2onnx==1.16.1 "numpy<2" onnx onnxruntime "opencv-python-headless<4.11"`. Extract the `.task` file (it's a zip) into `models\mp-pose-<v>\extracted\`.
 
 Xenia build (from `external\xenia-canary`): `git submodule update --init --depth 1 --recursive`, then `python xenia-build.py premake` and `python xenia-build.py build --config=release`. Output: `build\bin\Windows\Release\xenia_canary.exe`.
+
+Replay smoke test (ryantimjohn fork, from `external\ryantimjohn-xenia\build\bin\Windows\Release`; no game loaded):
+- Run `tools\phase0\xdepth_writer.py --demo demo.xdepth`.
+- Then run `xenia_canary.exe --nui=replay --nui_replay=demo.xdepth --flush_log=true --log_file=replay.log`.
+- Expect `NUI: replaying ... (90 frames)` in the log.
 
 Venv: `python -m venv tools\.venv`, then `pip install onnxruntime-directml numpy opencv-contrib-python pygrabber mediapipe tqdm` and `pip install --no-deps rtmlib`.
 

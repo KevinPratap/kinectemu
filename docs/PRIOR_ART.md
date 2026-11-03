@@ -66,6 +66,19 @@ A real Kinect v1 drives **title 5345084D's own NUI library** inside Xenia, and "
   - No logs are committed.
 - **Overlap with knuckleslee:** it has its own LDI and XamContentOpenFile. Its GPU resolve change infers the rectangle from destination extents (`gpu/draw_util.cc:1394-1420`, marked TODO) instead of #1280's CPU vertex-shader approach. Upstream will have to reconcile the two.
 
+**Built and tested here (2026-11-03):**
+- **Build:** release with `--build-tests`, 22 minutes at 6 parallel jobs. 16 jobs ran the compiler out of heap space (C1060).
+- **One local build-script fix:** `xenia-build.py` calls `tools/vswhere/vswhere.exe` with forward slashes, which `CreateProcess` can't run. Upstream uses backslashes. Patched in our ignored clone only.
+- **Tests:** `xenia-nui-tests` all passed (81 cases, 37,142 assertions), covering depth conversion, `NuiSystem` publishing and recording, the replay backend and tilt. `xenia-kernel-tests` 178 cases and `xenia-gpu-tests` 17 cases also passed.
+- **Independent check:** recomputed in Python, the code-14 parameters give raw 2000 → 4000 mm and 3999 → 399.4 mm, as documented.
+- **Replay backend:** `--nui=replay --nui_replay=<file.xdepth>` plays a recorded host depth stream into the guest. `tools/phase0/xdepth_writer.py` writes that format, and its self-test passes.
+  - This means the Python pipeline can drive Option A′ on a real title with no C++: webcam → synthetic mm depth → `.xdepth` → replay.
+  - **Runtime check passed, with no game loaded.** Command: `xenia_canary.exe --nui=replay --nui_replay=demo.xdepth --flush_log=true`, using `xdepth_writer.py --demo`, 90 frames.
+    - Setup ran through Memory, Processor, Graphics, HID, VFS and Kernel.
+    - The NUI lines appeared in order: `NUI: system Depth replay ready`, then device status initializing → ready, which notifies the guest. Next came `NUI: replaying ...demo.xdepth (90 frames)` and `NUI: 300 depth frames replayed`, so the file loops.
+    - Whether a title's tracker accepts these frames still needs a game image.
+- **Its encoding differs from #1274's libfreenect curve.** Details and the tracker's acceptance limits (player at 1800..2920 mm and so on) are in [PSCAM_CONTRACT.md §8](PSCAM_CONTRACT.md).
+
 **Consequence for us:** a webcam backend fits this design as one `NuiSystem` subclass that publishes synthetic depth in millimetres plus gravity. The fork handles the guest LUT, PsCam state machine and ring buffers. This is the shortest route to Option A′.
 
 ## 4. weronika-saturday/xenia-canary: why it "compiles but produces no frames"
