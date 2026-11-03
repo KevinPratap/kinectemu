@@ -1,0 +1,53 @@
+{
+  "frames": 898,
+  "capture_fps": 29.91,
+  "frame_size": "1280x720",
+  "fixture": "fixtures\\fullbody_02",
+  "results": [
+    {
+      "n": 898,
+      "p50_ms": 21.74,
+      "p95_ms": 24.91,
+      "max_ms": 99.16,
+      "mean_persons": 1,
+      "frames_with_mask": 898,
+      "full_body_detections": 281,
+      "landmark_span_m_median": 1.383,
+      "model": "mp-pose-lite",
+      "device": "cpu (mediapipe tflite)"
+    },
+    {
+      "n": 898,
+      "p50_ms": 26.34,
+      "p95_ms": 28.76,
+      "max_ms": 33.81,
+      "mean_persons": 0.99,
+      "frames_with_mask": 891,
+      "full_body_detections": 245,
+      "landmark_span_m_median": 1.398,
+      "model": "mp-pose-full",
+      "device": "cpu (mediapipe tflite)"
+    },
+    {
+      "n": 898,
+      "p50_ms": 57.9,
+      "p95_ms": 70.89,
+      "max_ms": 111.87,
+      "mean_persons": 1,
+      "frames_with_mask": 898,
+      "full_body_detections": 330,
+      "landmark_span_m_median": 1.384,
+      "model": "mp-pose-heavy",
+      "device": "cpu (mediapipe tflite)"
+    },
+    {
+      "n": 898,
+      "p50_ms": 26.07,
+      "p95_ms": 31.58,
+      "max_ms": 41.12,
+      "mean_persons": 1.19,
+      "model": "rtmo-s",
+      "device": "RTX 4050 (DML device 1)"
+    }
+  ]
+}

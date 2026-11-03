@@ -47,7 +47,11 @@ def roi_from_aux(xy):
 
 
 def dml_session(path, device):
+    """DirectML on adapter `device`, or the CPU when device < 0."""
     so = ort.SessionOptions()
+    if device < 0:
+        so.intra_op_num_threads = 4
+        return ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
     so.enable_mem_pattern = False
     so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     return ort.InferenceSession(str(path), so, providers=[("DmlExecutionProvider", {"device_id": device})])
@@ -82,8 +86,9 @@ def roi_affine(center, half, angle, size=256):
 class Detector:
     """RTMO-s person detector; returns up to MAX_PLAYERS crop ROIs."""
 
-    def __init__(self, models, device):
+    def __init__(self, models, device, min_score=0.3):
         self.rtmo = rtmo_session(models / "rtmo-s" / "end2end.onnx", device)
+        self.min_score = min_score
 
     def __call__(self, frame, size=640):
         h, w = frame.shape[:2]
@@ -95,7 +100,7 @@ class Detector:
         order = np.argsort(-dets[0, :, 4])
         rois = []
         for i in order[:MAX_PLAYERS]:
-            if dets[0, i, 4] < 0.3:
+            if dets[0, i, 4] < self.min_score:
                 break
             box = dets[0, i, :4] / ratio
             pts = kpts[0, i, :, :2] / ratio

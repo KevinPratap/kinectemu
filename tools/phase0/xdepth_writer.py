@@ -34,6 +34,9 @@ class XdepthWriter:
         self.f.write(struct.pack("<QQ", self.seq, int(timestamp_us)))
         self.f.write(np.ascontiguousarray(depth_mm, dtype="<u2").tobytes())
 
+    def flush(self):
+        self.f.flush()
+
     def close(self):
         self.f.close()
 

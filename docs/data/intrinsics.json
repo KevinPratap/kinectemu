@@ -1,0 +1,105 @@
+{
+  "image_size": {
+    "width": 1280,
+    "height": 720
+  },
+  "square_mm": 25.0,
+  "pattern_inner_corners": [
+    9,
+    6
+  ],
+  "num_views": 20,
+  "rms_reprojection_error_px": 0.5566,
+  "per_view_rms_px": [
+    0.6465,
+    0.2906,
+    0.2414,
+    0.2997,
+    1.1174,
+    0.3676,
+    0.3246,
+    0.4454,
+    0.7485,
+    0.2695,
+    0.1751,
+    0.4551,
+    0.4678,
+    0.6947,
+    0.902,
+    0.5103,
+    0.5044,
+    0.7369,
+    0.4828,
+    0.4256
+  ],
+  "fx": 796.542,
+  "fy": 792.016,
+  "cx": 668.164,
+  "cy": 355.477,
+  "camera_matrix": [
+    [
+      796.5415351564482,
+      0.0,
+      668.1641090742058
+    ],
+    [
+      0.0,
+      792.0163043863939,
+      355.47717365851804
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "distortion_coeffs": [
+    -0.010225251513381169,
+    -0.015319109280146204,
+    -0.0012703196105839883,
+    0.0019836696387058243,
+    0.0
+  ],
+  "distortion_model": "opencv plumb_bob [k1, k2, p1, p2, k3], k3 fixed to 0",
+  "fov_deg": {
+    "horizontal": 77.56,
+    "vertical": 48.89,
+    "diagonal": 85.42
+  },
+  "kinect_v1_comparison": {
+    "webcam_fov_deg": {
+      "horizontal": 77.56,
+      "vertical": 48.89
+    },
+    "webcam_4x3_center_crop_fov_deg": {
+      "horizontal": 62.15,
+      "vertical": 48.89
+    },
+    "kinect_v1_color": {
+      "horizontal_deg": 62.0,
+      "vertical_deg": 48.6,
+      "delta_h_deg": 15.56,
+      "delta_v_deg": 0.29,
+      "delta_h_4x3_crop_deg": 0.15,
+      "webcam_wider_h": true,
+      "webcam_wider_v": true
+    },
+    "kinect_v1_depth": {
+      "horizontal_deg": 57.0,
+      "vertical_deg": 43.0,
+      "delta_h_deg": 20.56,
+      "delta_v_deg": 5.89,
+      "delta_h_4x3_crop_deg": 5.15,
+      "webcam_wider_h": true,
+      "webcam_wider_v": true
+    }
+  },
+  "camera": "HP Wide Vision HD Camera",
+  "camera_index": 1,
+  "readback": {
+    "width": 1280,
+    "height": 720,
+    "reported_fps": 30.00003000003
+  },
+  "timestamp": "2026-11-03T10:00:05"
+}
