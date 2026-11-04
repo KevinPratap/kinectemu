@@ -142,18 +142,20 @@ def nui_joints(cam, vis, raw_mm, root_mm, target_mm, shift_px, mirror, sides):
     synthetic depth: (20x3 metres in the title's sensor space, 20 joint states,
     2 = tracked, 1 = inferred).
 
-    The title's skeleton x grows with the column of the depth image it is
-    given, and that image (the fork reverses each row of our mirrored frames)
-    runs the same way as the webcam's own; y is up, z away from the sensor.
-    The body goes where synth_frame puts its depth: lateral metres at the
-    filtered distance (the silhouette is scaled by root/target and drawn at
+    The title's skeleton x grows with the column of the frames we write
+    (mirrored by default): measured, not derived. On a replay the title's own
+    hip followed its player mask as column = 160 + 290 x / z (correlation
+    +0.89), and live a skeleton with the webcam's x followed it with -0.91, so
+    x is the webcam's x negated when mirroring. y is up, z away from the
+    sensor. The body goes where synth_frame puts its depth: lateral metres at
+    the filtered distance (the silhouette is scaled by root/target and drawn at
     target), z moved by target - raw, then amplify_motion's pixel shift, which
-    is made in the mirrored frame and so goes the other way in x.
+    is made in the frame we write.
 
     sides='tracker' names left and right as the title's own tracker did on our
     depth: its "right" hand had the larger x in 97% of a replay's frames, which
-    with a mirrored feed is the player's anatomical left. 'anatomical' keeps
-    MediaPipe's names."""
+    with mirroring is the player's anatomical right too. 'anatomical' always
+    keeps MediaPipe's names; the two differ only with --no-mirror."""
     hip = cam[[23, 24]].mean(axis=0)
     spine = hip + (cam[[11, 12]].mean(axis=0) - hip) / 3.0
     j = np.array([spine if src is None else cam[list(src)].mean(axis=0) for src in NUI_FROM_MP])
@@ -162,10 +164,10 @@ def nui_joints(cam, vis, raw_mm, root_mm, target_mm, shift_px, mirror, sides):
     k = root_mm / raw_mm
     m_per_px = target_mm / 1000.0 / KF
     out = np.empty_like(j)
-    out[:, 0] = (1.0 if mirror else -1.0) * j[:, 0] * k - shift_px[0] * m_per_px
+    out[:, 0] = (-1.0 if mirror else 1.0) * j[:, 0] * k + shift_px[0] * m_per_px
     out[:, 1] = -j[:, 1] * k - shift_px[1] * m_per_px
     out[:, 2] = j[:, 2] + (target_mm - raw_mm) / 1000.0
-    if sides == "tracker" and mirror:
+    if sides == "tracker" and not mirror:
         for a, b in NUI_SIDES:
             out[[a, b]] = out[[b, a]]
             seen[[a, b]] = seen[[b, a]]
@@ -264,7 +266,7 @@ def synth_frame(people, K, Km, mask_scale, args, smooth):
         target = float(np.clip(root + args.push_mm, *args.clamp_mm))
         d = np.where(d > 0, d + (target - raw), 0).astype(np.float32)
         dk = to_kinect(d, Km, not args.no_mirror, root / target)
-        dk, shift = amplify_motion(dk, p["slot"], smooth, args)
+        dk, shift = amplify_motion(dk, p["slot"], smooth, args, target)
         nearer = (dk > 0) & ((kin == 0) | (dk < kin))
         kin[nearer] = dk[nearer]
         kl[nearer] = p["slot"] + 1
@@ -300,7 +302,7 @@ def synth_frame(people, K, Km, mask_scale, args, smooth):
     return out, rec, rejected
 
 
-def amplify_motion(dk, slot, state, args):
+def amplify_motion(dk, slot, state, args, target_mm):
     """Exaggerates a player's sideways position and upward excursions in the
     Kinect image. Kinect Adventures' tracker passed on about 0.43 of a sideways
     move and 0.6-0.7 of a jump that our silhouette made, so leans and jumps
@@ -323,8 +325,10 @@ def amplify_motion(dk, slot, state, args):
     home = state.get(home_key, cx)
     state[home_key] = home + 0.002 * (cx - home)
     # Capped: Kinect Adventures pauses when the player leaves its play area, and
-    # with gain 2.0 a normal step reached +-1.1 m and paused River Rush.
-    m_per_px = state.get(slot, 2500.0) / 1000.0 / KF
+    # with gain 2.0 a normal step reached +-1.1 m and paused River Rush. The
+    # body is drawn at target_mm, so that is the distance a pixel is measured
+    # at (the raw distance made a 500 mm cap come out at ~700 mm).
+    m_per_px = target_mm / 1000.0 / KF
     reach = args.max_lateral_mm / 1000.0 / m_per_px
     dx = (KW - 1) / 2 + float(np.clip(args.gain_x * (cx - home), -reach, reach)) - cx
     dx = float(np.clip(dx, -xs.min(), KW - 1 - xs.max()))
@@ -400,6 +404,48 @@ def open_camera(index):
     return cap
 
 
+class FrameRecorder:
+    """Saves the frames live mode takes, with their arrival times, as a
+    fixture (NNNNN.jpg + timestamps.json, as fullbody_test.py writes) that
+    --live-frames and skeleton_harness.py can replay. JPEG encoding runs on a
+    thread of its own so the frame path does not wait for it. Frames stay on
+    this machine (fixtures/ is not committed)."""
+
+    def __init__(self, folder, source):
+        self.folder = Path(folder)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.source, self.t_ms, self.t0 = source, [], None
+        self.queue, self.cond, self.stop = [], threading.Condition(), False
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def add(self, frame, t_capture):
+        if self.t0 is None:
+            self.t0 = t_capture
+        i = len(self.t_ms)
+        self.t_ms.append(round((t_capture - self.t0) * 1000.0, 3))
+        with self.cond:
+            self.queue.append((i, frame))
+            self.cond.notify()
+
+    def run(self):
+        while True:
+            with self.cond:
+                self.cond.wait_for(lambda: self.queue or self.stop)
+                if not self.queue:
+                    return
+                i, frame = self.queue.pop(0)
+            cv2.imwrite(str(self.folder / f"{i:05d}.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+    def close(self):
+        with self.cond:
+            self.stop = True
+            self.cond.notify()
+        self.thread.join()
+        (self.folder / "timestamps.json").write_text(json.dumps(
+            {"source": self.source, "clock": "host perf_counter", "t_ms": self.t_ms}), encoding="utf-8")
+
+
 class FolderCapture:
     """Recorded frames played like a camera at 30 fps, looping, for running
     the live path (pipes, xenia) without anyone in front of the webcam."""
@@ -408,10 +454,15 @@ class FolderCapture:
         self.paths = sorted(Path(folder).glob("[0-9]*.jpg"))
         if not self.paths:
             raise SystemExit(f"no numbered .jpg frames in {folder}")
+        # Paced as recorded when the fixture says when each frame came.
+        stamps = Path(folder) / "timestamps.json"
+        t_ms = json.loads(stamps.read_text(encoding="utf-8")).get("t_ms", []) if stamps.exists() else []
+        self.gaps = [max(0.0, (b - a) / 1000.0) for a, b in zip(t_ms, t_ms[1:])] if len(t_ms) == len(self.paths) else []
         self.i, self.t_next = 0, time.perf_counter()
 
     def read(self):
-        self.t_next += 1 / 30
+        n = self.i % len(self.paths)
+        self.t_next += self.gaps[n - 1] if self.gaps and n else 1 / 30
         time.sleep(max(0.0, self.t_next - time.perf_counter()))
         frame = cv2.imread(str(self.paths[self.i % len(self.paths)]))
         self.i += 1
@@ -499,6 +550,7 @@ def run_live(args):
     skel_id, next_skel_id, last_skel, bad_skel = 0, 1, None, 0
     print("connected; q in the preview window or Ctrl-C to stop", flush=True)
     grabber = LatestFrame(cap)
+    recorder = FrameRecorder(args.record_frames, f"camera {args.camera} {w}x{h}") if args.record_frames else None
     trace = open(args.trace, "w", encoding="utf-8") if args.trace else None
     if trace:
         trace.write("t_s,frame,slot,hip_x,hip_y,head_x,head_y,root_mm,raw_mm,sil_x,sil_top,sil_bottom,"
@@ -512,6 +564,8 @@ def run_live(args):
                 print("camera stopped delivering frames; stopping", flush=True)
                 break
             frame, t_capture = got
+            if recorder:
+                recorder.add(frame, t_capture)
             t0 = time.perf_counter()
             # Search hard only while nobody is tracked; otherwise once a second is
             # enough to pick up a second player and keeps the detector's adapter
@@ -604,6 +658,9 @@ def run_live(args):
         pass
     finally:
         grabber.close()
+        if recorder:
+            recorder.close()
+            print(f"recorded {len(recorder.t_ms)} frames to {args.record_frames}", flush=True)
         if trace:
             trace.close()
         detector.close()
@@ -632,6 +689,8 @@ def main():
     ap.add_argument("--skeleton-sides", choices=("tracker", "anatomical"), default="tracker",
                     help="which hand the skeleton calls right: the one the title's own tracker "
                     "called right on our depth, or the player's anatomical right")
+    ap.add_argument("--record-frames", help="live: also save every camera frame and its time here, "
+                    "as a fixture --live-frames can replay (keep it under fixtures/, not committed)")
     ap.add_argument("--live-frames", help="live: play recorded .jpg frames from this folder at "
                     "30 fps instead of the webcam (tests the pipes without a player)")
     ap.add_argument("--trace", help="live: per-frame CSV of each player's placed hip and head position")
@@ -695,11 +754,12 @@ def main():
         wr.write(out, i * 33333)
         for r in rec:
             # What the skeleton pipe would send, against where the silhouette
-            # is in the title's (row-reversed) image: the same lateral metres.
+            # is in the frame we write (x grows with its column for the
+            # title): the same lateral metres.
             j, _ = r.pop("skel")
             r["skel_hip"] = [round(float(v), 3) for v in j[0]]
             if "sil_x" in r:
-                r["skel_minus_sil_x"] = round(float(j[0][0] + r["sil_x"]), 3)
+                r["skel_minus_sil_x"] = round(float(j[0][0] - r["sil_x"]), 3)
         per_frame.append(rec)
         if args.preview and i in (30, 120, 210):
             previews.append(cv2.applyColorMap(cv2.convertScaleAbs(out, alpha=255 / 4000), cv2.COLORMAP_TURBO))

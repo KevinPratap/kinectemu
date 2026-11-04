@@ -1,6 +1,6 @@
 # NUI implementation: skeleton injection (Option B) in Kinect Adventures
 
-Status, 2026-11-04: **the live webcam skeleton drives the game's menus and setup; River Rush steering and jumping are still untested.**
+Status, 2026-11-04: **the live webcam skeleton drives the game; the mirroring is fixed, and hands-free tests pass. A live feel-check of River Rush is still to do.**
 - Xenia finds the skeleton-frame site in title `4D5308ED` by its code, not by fixed addresses. It then binds the site to the host and rewrites every skeleton frame before the title, the HUD or the logs see it.
 - On a webcam-synthesised replay, the game accepted a synthetic test figure. It completed its play-space setup in 90 s. Without injection, the same replay was still stuck there.
 - **Live (section 6):** `synth_depth.py --live --skeleton-pipe` sends the webcam player's skeleton to xenia every frame. On it alone, the game ran its calibration, play-space setup and guide-gesture tutorial and started River Rush.
@@ -254,15 +254,15 @@ The format is `nui_skeleton_pipe.h` in the fork.
 
 A joint is tracked when its landmarks are visible, otherwise inferred.
 
-**Axes, checked against the title:**
-- **x:** the title's skeleton x grows with the column of the depth image it is given.
-  - On the A′ replay, its own hip followed the mask centroid as `column ≈ 160 + 290·x/z` (correlation 0.89).
-  - That image runs the same way as the webcam's: `synth_depth.py` mirrors the frame (correlation −0.99 with webcam x), and the fork reverses each row again.
-  - So skeleton x = webcam camera x, at the filtered distance.
+**Axes, measured against the title:**
+- **x:** the title's skeleton x grows with the column of the frames `synth_depth.py` writes (mirrored by default), so it is the webcam's x negated. Two measurements:
+  - On the A′ replay, the title's own hip followed its player mask as `column ≈ 160 + 290·x/z` (correlation +0.89).
+  - In the first live run, an injected skeleton that used the webcam's x unnegated followed the same mask with correlation −0.91, and the player saw everything mirrored. With x negated, the run's injected hips fall within 10 px of the mask centroid (85 px off before).
+  - An earlier derivation from the fork's row reversal got this sign wrong. Don't re-derive it; the measurements stand.
 - **y** is up, and **z** is moved back by the same push as the depth.
-- **Same place as the depth:** over the fixture, the skeleton hip and the silhouette's position in the title's image differ by a median of 4 mm (90% within 47 mm).
+- **Same place as the depth:** over the fixture, the skeleton hip and the silhouette's position in the frame the title gets differ by a median of 4 mm (90% within 47 mm). With `--gain-x 1.4` it is 7 mm (90% within 64 mm). The gain's sideways shift moves both.
 
-**Sides:** on our depth, the title's own tracker labelled as "right" the hand with the larger x in 97% of frames. That is the player's anatomical left. The pipe copies that by default (`--skeleton-sides tracker`); `anatomical` keeps MediaPipe's names. Which one the menus' hand cursor wants is not settled yet.
+**Sides:** on our depth, the title's own tracker labelled as "right" the hand with the larger x in 97% of frames. With x negated, that is the player's anatomical right, so MediaPipe's names are used as they are. `--skeleton-sides` only matters with `--no-mirror`.
 
 **Floor:** a level plane at the floor height `synth_depth.py` already estimates from the feet. It is the same plane its synthetic depth floor uses.
 
@@ -288,8 +288,63 @@ The user played; the pipeline ran at 15–30 fps. Screens every 20 s are in [the
 - **Stable id:** the single player keeps one tracking id while anyone stays in view, even when the webcam tracker moves them to another slot. A new id comes only after more than `--hold-frames` frames with nobody worth sending.
 - **Implausible bodies:** a body with its hip above its shoulder centre is not sent.
 
+### Second live test: mirrored, and leaning did nothing
+
+The user reported left and right mirrored, leaning doing nothing, and only jumps registering. The logs confirm the mirroring: the injected x had the wrong sign (see "Axes" above), now fixed. Leaning moved the head only about ±0.1 m, and steps moved the hip about 0.2 m, with the player standing about 0.2 m off the camera's axis. `--gain-x 1.4` (from A′) recentres the player's usual spot and amplifies sideways moves. Depth and skeleton move together.
+
+### Hands-free tests
+
+So the user doesn't have to stand up for every change, `tools/phase0/skeleton_harness.py` runs the title in xenia on a source that needs no camera. It takes a screenshot every second, then grades the title's logs and prints PASS/FAIL. The sources:
+- `--case synthetic`: `scripted_skeleton.py`, a scripted figure with exact ground truth. Its synthetic depth and matching skeleton go into the same two pipes. After 60 s standing still, every 30 s it does this:
+  - reaches the right arm forward and holds it 4 s (the title's "reach forward and hold to select");
+  - steps to −0.35 m and back, then to +0.35 m and back;
+  - jumps 0.30 m.
+- `--case cursor`: the same figure holds its right hand up and sweeps it sideways, for the title's hand cursor.
+- `--case frames:<folder>`: `synth_depth.py --live --live-frames` replaying recorded webcam frames.
+
+`synth_depth.py --record-frames DIR` saves a live run as such a folder: frames plus `timestamps.json`, replayed at the recorded pace. Keep these under `fixtures/`, which is not committed.
+
+The checks:
+
+| check | passes when |
+|---|---|
+| bound | the hook found and bound the site |
+| fresh | injection never fell back to the title's tracker |
+| tracking | one tracking id, and a body in ≥ 95% of logged frames |
+| direction | the injected hip agrees with the player mask the title's own tracker cut from our depth (correlation > 0.7, error < 40 px). This is the mirror check against the title itself |
+| lateral | synthetic only: steps reach the scripted x on the scripted side |
+| jumps | synthetic only: every scripted jump shows as a hip rise > 0.15 m |
+| paused | no "GAME PAUSED" in any screenshot (template match) |
+| cursor | cursor case only: the hand cursor moves across the screen with the hand |
+
+Two more are reported but never fail the run:
+- **raft:** the raft's screen x against the player's x. The camera follows the raft, so this is a weak signal.
+- **lateral and jumps on recorded frames:** reported, since there is no ground truth.
+
+Results:
+- **Synthetic, 300 s:** everything passed.
+- **Synthetic, 420 s and 480 s:** everything passed.
+  - The game reached River Rush on its own at about 135–155 s, selecting START by the scripted reach.
+  - One tracking id; a body in 100% of frames.
+  - Direction: correlation +1.00, 1 px error.
+  - Steps at −0.35…+0.35 m on the scripted side; one rise per scripted jump plus one; no pause screens.
+  - The raft's screen position showed no relation to the steps (best correlation −0.16 over 0–4 s lags).
+- **Cursor, first run:** on the START screen, the hand cursor followed the scripted right hand the way a player expects. Hand +0.02 / +0.17 / +0.34 m from the hip put the cursor at 31% / 38% / 54% of the screen width: the player's right hand going right moves the cursor right. Then the cursor rested on START, selected it, and River Rush began.
+- **Cursor, second run** (sweep kept off the button): passed. The cursor was found in 37 screenshots and followed the hand with correlation **+0.90** at a 0.75 s lag. On screen, the injected skeleton is not mirrored.
+- **Recorded webcam (`fullbody_02`, `--gain-x 1.4`, 240 s):** passed.
+  - One tracking id; a body in 100% of frames.
+  - Direction: correlation +0.99, 3 px error (mirrored would be 69 px).
+  - Hip x −0.70…+0.65 m. That is past the ±0.5 m `--max-lateral-mm` cap, because the cap was converted to pixels at the player's raw distance instead of the pushed distance the body is drawn at. Fixed.
+  - Rerun (180 s): hip x −0.49…+0.48 m, everything passed.
+  - The game stays on the START screen here: the recording has no forward reach.
+
 ## 7. Next steps
 
-1. **Rerun River Rush with the player staying about 2.2 m back throughout.** Check steering (lean, step) and jumps. If menus follow the wrong hand, try `--skeleton-sides anatomical`.
+1. **One live feel-check, with recording on.** The automated checks pass. Next, the user plays River Rush about 2.2 m back with `--gain-x 1.4 --record-frames ../../fixtures/live_<date>`, judging steering, jumps and delay. The saved frames then become a harness case (`--case frames:...`), so later changes are tested against the user's own play.
+   - **Harness before any live run:**
+     ```
+     python skeleton_harness.py --case synthetic --seconds 420 --out ../../runs/<name>
+     python skeleton_harness.py --case cursor --seconds 170 --out ../../runs/<name>
+     ```
 2. **Make the mask agree:** put the injected body in the tracker's dominant mask index, or emit depth for one player only. Then check that the game's use of the player-index stream is unaffected.
 3. **Latency:** the skeleton no longer waits for the tracker's GPU fit, but it still waits for the depth frame that paces the producer and for the game's `NuiTransformSmooth`. Measure end to end with `latency_flash_test.py`. If smoothing dominates, the game's `NuiTransformSmooth` call (`0x82D26190`) could be a second hook.
