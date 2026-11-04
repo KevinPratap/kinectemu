@@ -22,11 +22,17 @@ horizontal flip of the webcam image); the fork reverses rows again for the guest
       --out ../../docs/data/synth_depth.json --xdepth fixture.xdepth [--intrinsics ../../docs/data/intrinsics.json]
   python synth_depth.py --models ../../models --live --intrinsics ../../docs/data/intrinsics.json \
       --push-mm 700        # webcam -> xenia --nui=pipe --nui_pipe=kinectemu
+
+With --skeleton-pipe NAME, live mode also sends each frame's player as a
+20-joint NUI skeleton to xenia's skeleton injection
+(--nui_skeleton_inject=pipe:NAME), in the title's sensor space and placed
+where the synthetic depth puts the body, with the floor plane.
 """
 import argparse
 import json
 import math
 import statistics
+import struct
 import threading
 import time
 from pathlib import Path
@@ -37,6 +43,26 @@ import onnxruntime as ort
 
 from gpu_pose_pipeline import Detector, DetectorWorker, GpuPosePipeline
 from xdepth_writer import XdepthWriter
+
+# NUI skeleton joints, in the public NUI order, from MediaPipe landmarks: each
+# is the mean of the listed landmarks. MediaPipe names sides anatomically; see
+# nui_joints() for how they are paired with the title's.
+NUI_FROM_MP = [
+    (23, 24),                            # hip centre
+    None,                                # spine: a third of the way up the trunk
+    (11, 12),                            # shoulder centre
+    (7, 8),                              # head: between the ears
+    (11,), (13,), (15,), (15, 17, 19),   # left shoulder, elbow, wrist, hand
+    (12,), (14,), (16,), (16, 18, 20),   # right shoulder, elbow, wrist, hand
+    (23,), (25,), (27,), (31,),          # left hip, knee, ankle, foot
+    (24,), (26,), (28,), (32,),          # right hip, knee, ankle, foot
+]
+SPINE_FROM = (23, 24, 11, 12)
+# (left, right) pairs of NUI joint indices, for exchanging sides.
+NUI_SIDES = [(4, 8), (5, 9), (6, 10), (7, 11), (12, 16), (13, 17), (14, 18), (15, 19)]
+# One record per frame into xenia's skeleton pipe (fork src/xenia/nui/nui_skeleton_pipe.h).
+SKELETON_MAGIC = b"XNUISKL1"
+SKELETON_RECORD = struct.Struct("<8sQII3fI60f20I4f")
 
 KW, KH, KF = 640, 480, 583.3  # Kinect depth camera as the 4D5308ED runtime models it
 BODY = 33  # MediaPipe body landmarks; 33, 34 are aux ROI points
@@ -111,6 +137,79 @@ def player_depth(p, cam, vis, mask_scale, fx_mask, relief_mm):
     return out
 
 
+def nui_joints(cam, vis, raw_mm, root_mm, target_mm, shift_px, mirror, sides):
+    """The player as the 20-joint NUI skeleton the title would fit to our
+    synthetic depth: (20x3 metres in the title's sensor space, 20 joint states,
+    2 = tracked, 1 = inferred).
+
+    The title's skeleton x grows with the column of the depth image it is
+    given, and that image (the fork reverses each row of our mirrored frames)
+    runs the same way as the webcam's own; y is up, z away from the sensor.
+    The body goes where synth_frame puts its depth: lateral metres at the
+    filtered distance (the silhouette is scaled by root/target and drawn at
+    target), z moved by target - raw, then amplify_motion's pixel shift, which
+    is made in the mirrored frame and so goes the other way in x.
+
+    sides='tracker' names left and right as the title's own tracker did on our
+    depth: its "right" hand had the larger x in 97% of a replay's frames, which
+    with a mirrored feed is the player's anatomical left. 'anatomical' keeps
+    MediaPipe's names."""
+    hip = cam[[23, 24]].mean(axis=0)
+    spine = hip + (cam[[11, 12]].mean(axis=0) - hip) / 3.0
+    j = np.array([spine if src is None else cam[list(src)].mean(axis=0) for src in NUI_FROM_MP])
+    seen = np.array([2 if all(vis[i] for i in (SPINE_FROM if src is None else src)) else 1
+                     for src in NUI_FROM_MP], np.uint32)
+    k = root_mm / raw_mm
+    m_per_px = target_mm / 1000.0 / KF
+    out = np.empty_like(j)
+    out[:, 0] = (1.0 if mirror else -1.0) * j[:, 0] * k - shift_px[0] * m_per_px
+    out[:, 1] = -j[:, 1] * k - shift_px[1] * m_per_px
+    out[:, 2] = j[:, 2] + (target_mm - raw_mm) / 1000.0
+    if sides == "tracker" and mirror:
+        for a, b in NUI_SIDES:
+            out[[a, b]] = out[[b, a]]
+            seen[[a, b]] = seen[[b, a]]
+    return out, seen
+
+
+class SkeletonPipeWriter:
+    """One SKELETON_RECORD per frame into xenia's skeleton pipe
+    (--nui_skeleton_inject=pipe:<name>): the body, or none, and the floor."""
+
+    def __init__(self, name):
+        self.f = open(rf"\\.\pipe\{name}", "wb", buffering=0)
+
+    def write(self, timestamp_us, body, tracking_id, floor_y_mm):
+        flags, joints, states, pos = 0, [0.0] * 60, [0] * 20, (0.0, 0.0, 0.0)
+        if body is not None:
+            j, seen = body
+            flags |= 1
+            joints = j.astype(np.float32).ravel().tolist()
+            states = seen.tolist()
+            pos = tuple(float(v) for v in j[0])  # the runtime puts it near the hip
+        plane = (0.0, 0.0, 0.0, 0.0)
+        if floor_y_mm and floor_y_mm > 0:
+            # A level sensor (xenia reports tilt 0) floor_y below the camera.
+            flags |= 2
+            plane = (0.0, 1.0, 0.0, floor_y_mm / 1000.0)
+        self.f.write(SKELETON_RECORD.pack(SKELETON_MAGIC, int(timestamp_us), flags,
+                                          tracking_id if body is not None else 0,
+                                          *pos, 0, *joints, *states, *plane))
+
+    def close(self):
+        self.f.close()
+
+
+def connect_skeleton_pipe(name):
+    """Waits for xenia (--nui_skeleton_inject=pipe:<name>) to serve the pipe."""
+    print(rf"waiting for xenia's skeleton pipe \\.\pipe\{name} ...", flush=True)
+    while True:
+        try:
+            return SkeletonPipeWriter(name)
+        except OSError:
+            time.sleep(1.0)
+
+
 def to_kinect(depth, Km, mirror, scale=1.0):
     """Resample a mask-resolution depth map into the Kinect depth camera by ray angle.
     scale < 1 shrinks the image about the optical axis: a body moved straight
@@ -172,7 +271,8 @@ def synth_frame(people, K, Km, mask_scale, args, smooth):
         # Body position as placed in the virtual Kinect's space (m, y up): a push
         # moves the body straight back, so x and y stay what the webcam saw.
         hip = cam[[23, 24]].mean(axis=0)
-        rec.append({"slot": p["slot"], "root_mm": round(target), "raw_mm": round(raw),
+        skel = nui_joints(cam, vis, raw, root, target, shift, not args.no_mirror, args.skeleton_sides)
+        rec.append({"slot": p["slot"], "root_mm": round(target), "raw_mm": round(raw), "skel": skel,
                     "shift_x": shift[0], "shift_y": shift[1],
                     "hip_x": round(float(hip[0]), 3), "hip_y": round(float(-hip[1]), 3),
                     "head_x": round(float(cam[0, 0]), 3), "head_y": round(float(-cam[0, 1]), 3)})
@@ -300,6 +400,27 @@ def open_camera(index):
     return cap
 
 
+class FolderCapture:
+    """Recorded frames played like a camera at 30 fps, looping, for running
+    the live path (pipes, xenia) without anyone in front of the webcam."""
+
+    def __init__(self, folder):
+        self.paths = sorted(Path(folder).glob("[0-9]*.jpg"))
+        if not self.paths:
+            raise SystemExit(f"no numbered .jpg frames in {folder}")
+        self.i, self.t_next = 0, time.perf_counter()
+
+    def read(self):
+        self.t_next += 1 / 30
+        time.sleep(max(0.0, self.t_next - time.perf_counter()))
+        frame = cv2.imread(str(self.paths[self.i % len(self.paths)]))
+        self.i += 1
+        return frame is not None, frame
+
+    def release(self):
+        pass
+
+
 class LatestFrame:
     """Reads the camera on its own thread and keeps only the newest frame. A
     consumer slower than the camera then skips frames instead of falling
@@ -355,7 +476,7 @@ def connect_pipe(name):
 def run_live(args):
     """Webcam -> synthetic depth -> xenia's depth pipe, until q or Ctrl-C.
     Frames stay on this machine: the pipe only takes local clients."""
-    cap = open_camera(args.camera)
+    cap = FolderCapture(args.live_frames) if args.live_frames else open_camera(args.camera)
     ok, frame = cap.read()
     if not ok:
         raise SystemExit(f"camera {args.camera} gave no frame")
@@ -371,6 +492,11 @@ def run_live(args):
     # the frame path, and it only adds people: it does not reset the tracks.
     detector = DetectorWorker(Detector(Path(args.models), args.detector_device, args.min_detect_score))
     wr = connect_pipe(args.pipe)
+    sk = connect_skeleton_pipe(args.skeleton_pipe) if args.skeleton_pipe else None
+    # Skeleton pipe state: the body last sent and its tracking id, and how many
+    # frames in a row had no body worth sending. A player who comes back after
+    # more than --hold-frames of those is a new one, as with the sensor.
+    skel_id, next_skel_id, last_skel, bad_skel = 0, 1, None, 0
     print("connected; q in the preview window or Ctrl-C to stop", flush=True)
     grabber = LatestFrame(cap)
     trace = open(args.trace, "w", encoding="utf-8") if args.trace else None
@@ -413,6 +539,24 @@ def run_live(args):
                 held_total += 1
             else:
                 empty += 1
+            if sk:
+                # One body for now: the lowest slot, as drop_duplicates keeps.
+                # It keeps its tracking id while someone stays in view, even
+                # when the webcam tracker moves them to another slot: a new id
+                # makes the title pause for a new player (seen live).
+                first = min(rec, key=lambda r: r["slot"]) if rec else None
+                # Close up the landmarks of an unseen lower body can land
+                # above the shoulders (seen live at 0.7 m); no player looks
+                # like that, so it is not sent.
+                upright = first is not None and first["skel"][0][0][1] < first["skel"][0][2][1]
+                if upright:
+                    if last_skel is None:
+                        skel_id, next_skel_id = next_skel_id, next_skel_id + 1
+                    last_skel, bad_skel = (first["skel"], skel_id), 0
+                else:
+                    bad_skel += 1
+                    if bad_skel > args.hold_frames:
+                        last_skel = None
             if trace:
                 now_s = time.perf_counter()
                 for r in rec or [{"slot": -1}]:
@@ -428,6 +572,13 @@ def run_live(args):
                 print("xenia closed the pipe; reconnecting", flush=True)
                 wr = connect_pipe(args.pipe)
                 continue
+            if sk:
+                try:
+                    body, sid = last_skel if last_skel else (None, 0)
+                    sk.write(time.perf_counter_ns() // 1000, body, sid, smooth.get(FLOOR_KEY, args.floor_y_mm))
+                except OSError:
+                    print("xenia closed the skeleton pipe; reconnecting", flush=True)
+                    sk = connect_skeleton_pipe(args.skeleton_pipe)
             # Arrival of the frame in this process -> depth handed to xenia.
             age_ms.append((time.perf_counter() - t_capture) * 1000)
             i += 1
@@ -435,6 +586,10 @@ def run_live(args):
                 now = time.perf_counter()
                 players = ", ".join(f"P{r['slot'] + 1} {r['root_mm']} mm (seen {r['raw_mm']})"
                                     for r in rec) or "nobody"
+                if sk and last_skel:
+                    hip = last_skel[0][0][0]
+                    players += (f"  skeleton id {last_skel[1]} hip x {hip[0]:+.2f} "
+                                f"y {hip[1]:+.2f} z {hip[2]:.2f} m")
                 print(f"{time.strftime('%H:%M:%S')}  {30 / (now - t_last):5.1f} fps  "
                       f"synth p50 {statistics.median(synth_ms):5.1f} ms  "
                       f"age p50 {statistics.median(age_ms):5.1f} ms  skipped {grabber.skipped}  "
@@ -454,10 +609,12 @@ def run_live(args):
         detector.close()
         cap.release()
         cv2.destroyAllWindows()
-        try:
-            wr.close()
-        except OSError:
-            pass
+        for w in (wr, sk):
+            try:
+                if w:
+                    w.close()
+            except OSError:
+                pass
 
 
 def main():
@@ -470,6 +627,13 @@ def main():
     ap.add_argument("--camera", type=int, default=1)
     ap.add_argument("--pipe", default="kinectemu", help="pipe name xenia serves (--nui_pipe)")
     ap.add_argument("--no-window", action="store_true")
+    ap.add_argument("--skeleton-pipe", help="live: also send the player's NUI skeleton to xenia "
+                    "--nui_skeleton_inject=pipe:<this name>")
+    ap.add_argument("--skeleton-sides", choices=("tracker", "anatomical"), default="tracker",
+                    help="which hand the skeleton calls right: the one the title's own tracker "
+                    "called right on our depth, or the player's anatomical right")
+    ap.add_argument("--live-frames", help="live: play recorded .jpg frames from this folder at "
+                    "30 fps instead of the webcam (tests the pipes without a player)")
     ap.add_argument("--trace", help="live: per-frame CSV of each player's placed hip and head position")
     ap.add_argument("--hold-frames", type=int, default=10,
                     help="live: repeat the last body this many frames when tracking briefly loses everyone")
@@ -529,6 +693,13 @@ def main():
         people = pipe.process(cv2.imread(str(path)), i % 10 == 0)
         out, rec, _ = synth_frame(people, K, Km, mask_scale, args, smooth)
         wr.write(out, i * 33333)
+        for r in rec:
+            # What the skeleton pipe would send, against where the silhouette
+            # is in the title's (row-reversed) image: the same lateral metres.
+            j, _ = r.pop("skel")
+            r["skel_hip"] = [round(float(v), 3) for v in j[0]]
+            if "sil_x" in r:
+                r["skel_minus_sil_x"] = round(float(j[0][0] + r["sil_x"]), 3)
         per_frame.append(rec)
         if args.preview and i in (30, 120, 210):
             previews.append(cv2.applyColorMap(cv2.convertScaleAbs(out, alpha=255 / 4000), cv2.COLORMAP_TURBO))
@@ -550,6 +721,12 @@ def main():
         "area_m2": {"min": min((r["area_m2"] for r in players), default=None),
                     "max": max((r["area_m2"] for r in players), default=None)},
         "fraction_within_limits": {k: within(k) for k in LIMITS},
+        # Skeleton hip x minus the silhouette's x in the title's image (m):
+        # near 0 when skeleton and depth put the body in the same place.
+        "skel_minus_sil_x_p50": statistics.median(
+            [r["skel_minus_sil_x"] for r in players if "skel_minus_sil_x" in r] or [0.0]),
+        "skel_minus_sil_x_abs_p90": float(np.percentile(
+            [abs(r["skel_minus_sil_x"]) for r in players if "skel_minus_sil_x" in r] or [0.0], 90)),
         "limits": LIMITS,
         "per_frame": per_frame,
     }
