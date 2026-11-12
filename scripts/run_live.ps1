@@ -99,7 +99,10 @@ $xeniaArgs = @(
     "--nui=pipe",
     "--nui_pipe=$Pipe",
     "--nui_skeleton_inject=pipe:$SkeletonPipe",
-    "--nui_tilt_override=0"
+    "--nui_tilt_override=0",
+    # Required for body-controlled gameplay: without it the title shuts its avatar
+    # system down, the raft is empty and nothing steers (fork docs/nui.md, "The avatar").
+    "--allow_avatar_initialization=true"
 )
 
 $synthArgs = @(

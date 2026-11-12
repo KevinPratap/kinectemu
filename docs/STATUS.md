@@ -93,6 +93,8 @@ Last update: 2026-11-12. Current phase: **0 (feasibility)**. Emulator code exist
 
 - **Hands-free harness re-verified (2026-11-12)** on the committed fork build with `skeleton_harness.py --case synthetic --seconds 420`: PASS on every check (bound, fresh with 0 fall-backs, one tracking id in 100% of 4,044 logged frames, direction corr +1.00 at 1 px error, lateral ±0.35 m as scripted, 12 jump rises for 11 scripted, no pause screen). Fork unit tests: 88 cases, 37,279 assertions pass. A first attempt failed only because the harness did not resolve a relative `--out` path (the scripted source crashed on `truth.csv`); fixed.
 
+- **Root cause of "left and right do nothing" found (2026-11-12): xenia was never started with `--allow_avatar_initialization=true`.** Without it the title shuts its avatar system down, the raft is empty and River Rush takes no body input; menus and the hand cursor still work. This applies to every earlier live run, in both the A′ and the injection path, and the harness passed anyway because it only checks what the title receives. With the flag, a translucent avatar stands in the raft on the scripted player's side and the score at 232 s is 36 against 17 ([crops](data/ka_avatar_flag_ab.jpg), NUI_IMPLEMENTATION §6). Raft steering itself is not yet measured, and a live test with the flag is outstanding. The "harness re-verified" entry above therefore says nothing about gameplay.
+
 ## Findings that change the plan
 - Kinect titles get depth and colour through the kernel export `PsCamDeviceRequest`. Their own statically linked SDK then tracks the skeleton on the guest GPU, and XAM has no frame-delivery export.
 - The first guest component is therefore a **virtual `PsCamDeviceRequest` driver**, serving raw 11-bit disparity plus Bayer colour, following the contract documented in Canary PR #1274. Details in PRIOR_ART §2 and NUI_LAYER.
@@ -150,7 +152,7 @@ Replay smoke test (ryantimjohn fork, from `external\ryantimjohn-xenia\build\bin\
 - Expect `NUI: replaying ... (90 frames)` in the log.
 
 Live webcam into Kinect Adventures (fork build on branch `kinectemu-pipe-backend`):
-1. Start the game: `xenia_canary.exe "<Kinect Adventures!.iso>" --nui=pipe --nui_pipe=kinectemu`
+1. Start the game with `scripts\run_live.ps1 -Iso "<Kinect Adventures!.iso>"`, or by hand: `xenia_canary.exe "<Kinect Adventures!.iso>" --nui=pipe --nui_pipe=kinectemu --nui_skeleton_inject=pipe:kinectemu-skel --nui_tilt_override=0 --allow_avatar_initialization=true` (the last flag is required for gameplay; see NUI_IMPLEMENTATION §6)
 2. From the project root: `tools\.venv\Scripts\python.exe tools\phase0\synth_depth.py --models models --live --intrinsics docs\data\intrinsics.json --push-mm 700`
 3. Stand about 1.8 m from the laptop with your whole body in view.
 

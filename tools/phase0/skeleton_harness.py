@@ -15,6 +15,10 @@ what the title saw (--nui_log_play_frames) and prints PASS/FAIL per check:
 
 Checks
   bound       the hook found the title's skeleton frame site and bound it
+  avatar      xenia was started with --allow_avatar_initialization=true.
+              Without it the title shuts its avatar system down, the raft
+              is empty and no activity takes body input, while every
+              skeleton check below still passes (seen 2026-11-12)
   fresh       injection never fell back to the title's own tracker after it
               started taking poses
   tracking    one tracking id, and an injected body in >= 95% of logged frames
@@ -29,7 +33,10 @@ Checks
   paused      no "GAME PAUSED" screen in any screenshot
   raft        River Rush only: the raft's screen x follows the player's x
               (reported unless clear; the camera follows the raft, so it is
-              a weak signal)
+              a weak signal). NOTHING here measures steering itself: the
+              checks above show what the title receives, not what the
+              game does with it. Look at the screenshots: the translucent
+              avatar should stand on the player's side of the raft
   cursor      cursor case: the title's hand cursor moves across the screen
               the way the player's right hand moves (the mirror check a
               player sees: hand to the player's right, cursor to the right)
@@ -124,6 +131,10 @@ def run(args, out):
         str(args.xenia), str(args.iso), "--nui=pipe", f"--nui_pipe={args.pipe}",
         f"--nui_skeleton_inject=pipe:{args.pipe}-skel", "--nui_tilt_override=0",
         f"--nui_log_play_frames={args.log_every}", f"--log_file={log}", "--flush_log=true",
+        # Without xam's avatar initialisation the title shuts its avatar system
+        # down and no activity takes body input: the raft is empty and does
+        # not steer (fork docs/nui.md, "The avatar").
+        f"--allow_avatar_initialization={'false' if args.no_avatar else 'true'}",
         "--mute=true"])
     if args.case in ("synthetic", "cursor"):
         source = [str(PYTHON), "scripted_skeleton.py", "--pipe", args.pipe,
@@ -249,6 +260,9 @@ def grade(args, out, shots):
     def check(name, ok, detail):
         results.append({"check": name, "result": ok, "detail": detail})
 
+    check("avatar", not args.no_avatar,
+          "xenia started with avatar initialisation" if not args.no_avatar else
+          "--no-avatar: the title has no avatar pawn, so its activities ignore the body")
     check("bound", "now bound to the host" in text,
           "frame callback thunk bound" if "now bound to the host" in text else "no bind line in the log")
     starts = text.find("takes poses from the pipe")
@@ -394,6 +408,9 @@ def main():
     ap.add_argument("--iso", type=Path, default=ISO)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--grade-only", action="store_true", help="grade an earlier run in --out")
+    ap.add_argument("--no-avatar", action="store_true",
+                    help="run xenia without --allow_avatar_initialization=true (the title then "
+                    "takes no body input in its activities; for comparison only)")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     if args.grade_only:

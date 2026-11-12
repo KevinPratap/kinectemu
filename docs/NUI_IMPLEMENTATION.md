@@ -224,7 +224,7 @@ One injected run ended about 100 s in through xenia's normal window-close path (
 ### How it works
 
 ```
-xenia_canary.exe "<Kinect Adventures!.iso>" --nui=pipe --nui_pipe=kinectemu --nui_skeleton_inject=pipe:kinectemu-skel --nui_tilt_override=0
+xenia_canary.exe "<Kinect Adventures!.iso>" --nui=pipe --nui_pipe=kinectemu --nui_skeleton_inject=pipe:kinectemu-skel --nui_tilt_override=0 --allow_avatar_initialization=true
 tools\.venv\Scripts\python.exe synth_depth.py --models ..\..\models --live --intrinsics ..\..\docs\data\intrinsics.json --push-mm 700 --skeleton-pipe kinectemu-skel
 ```
 
@@ -337,6 +337,28 @@ Results:
   - Hip x −0.70…+0.65 m. That is past the ±0.5 m `--max-lateral-mm` cap, because the cap was converted to pixels at the player's raw distance instead of the pushed distance the body is drawn at. Fixed.
   - Rerun (180 s): hip x −0.49…+0.48 m, everything passed.
   - The game stays on the START screen here: the recording has no forward reach.
+
+### Why nothing steered until 2026-11-12: the avatar flag
+
+Every live and harness run before 2026-11-12 started xenia **without** `--allow_avatar_initialization=true`. The fork's `docs/nui.md` ("The avatar") says what that does: `XamAvatarInitialize` fails, the title shuts its avatar system down, and "the raft does not steer". The activities read an avatar pawn that the title drives from the skeleton; River Rush steers from the pawn's position. With no pawn, the menus, the hand cursor and the setup screens still work (they read the skeleton directly). That is why it went unnoticed, and why the user kept reporting that left and right did nothing.
+
+The harness did not catch it. Its `lateral` and `jumps` checks read the title's skeleton log, so they show what the title receives, not what the game does with it. Its only game-side signal, the raft's screen x, is weak because the camera follows the raft.
+
+Same scripted figure (steps to ±0.35 m), same build, 420 s each ([crops](data/ka_avatar_flag_ab.jpg)):
+
+| | flag off (`runs/verify_synth2`) | flag on (`runs/avatar_synth`) |
+|---|---|---|
+| avatar in the raft | none in any screenshot | translucent stand-in figure |
+| avatar's side of the raft | n/a | left of the raft's centre at x = −0.35 (223 s, 224 s); right of it at +0.35 (201 s, 202 s, 231 s, 232 s) |
+| score on the raft at 232 s | 17 | 36 |
+| skeleton checks (bound, fresh, tracking, direction, lateral, jumps, paused) | all pass | all pass |
+| raft screen x vs scripted x | corr −0.18 | corr +0.12 |
+
+**What this shows:** with the flag, the title has a pawn that follows the injected player to the correct side. **What it does not show:** a measured steering response of the raft. The fork's notes say the activity steers from the pawn's position; that has not been measured here, and the live feel is still for the user to judge.
+
+The harness and `scripts/run_live.ps1` now pass the flag. `skeleton_harness.py --no-avatar` reproduces the old behaviour and fails its `avatar` check.
+
+Not tried: the fork's notes also mention signing in through xenia's Profiles menu (for saving) and an external title patch for the obstacle activity, written for a different build of this title.
 
 ## 7. Next steps
 

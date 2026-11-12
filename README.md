@@ -12,7 +12,7 @@ Tested on exactly one machine: HP Victus 15 (i7-12650H, RTX 4050 + Intel UHD, HP
 
 | Works (checked on that laptop) | Does not work, or known limits | Not tested yet |
 |---|---|---|
-| Kinect Adventures boots, sees the emulated sensor and passes its Kinect setup (calibration, play-space screen) | The game's own depth tracker, fed our synthetic depth, lost the player often. That path (`--nui=pipe` alone) was judged not playable by the author | Steering and jumping in River Rush on the injected skeleton, by a human, live |
+| Kinect Adventures boots, sees the emulated sensor and passes its Kinect setup (calibration, play-space screen) | The game's own depth tracker, fed our synthetic depth, lost the player often. That path (`--nui=pipe` alone) was judged not playable by the author | Steering and jumping in River Rush on the injected skeleton, by a human, live. Until 2026-11-12 every run lacked the avatar flag, so the game ignored the body. With the flag the avatar follows a scripted player to the correct side of the raft ([crops](docs/data/ka_avatar_flag_ab.jpg)), but the raft's steering response is not measured |
 | With skeleton injection, the webcam skeleton alone drives the game through setup and its guide-gesture tutorial, and starts River Rush | GPU contention: under Optimus the iGPU also composites Xenia's output, and our pose work shares the machine with the emulator. During gameplay the feed fell to 12-22 fps in one test | End-to-end latency with injection on |
 | Mirroring is correct (hand cursor follows the hand, correlation +0.90 in the harness) | Display-to-camera latency alone is about 186 ms (p50, measured). Real Kinect end-to-end is roughly 100 ms | Any title other than Kinect Adventures (Dance Central, Joy Ride, Kinect Sports need their XEX inspected first) |
 | The automated hands-free harness passes: scripted figure for 300-480 s, hand-cursor case, and a recorded webcam clip | The webcam sees a wider field of view (77.6 x 48.9 degrees) than a Kinect (57 x 43), so players must stand further back | Two players. A phantom second player seen in one live run was a tracker bug, since fixed; two real players were never tested |
@@ -47,7 +47,7 @@ Tested on exactly one machine: HP Victus 15 (i7-12650H, RTX 4050 + Intel UHD, HP
  (.xdepth frames)                (376-byte XNUISKL1 records)
     |                                 |
     v                                 v
- Xenia fork  --nui=pipe          --nui_skeleton_inject=pipe:kinectemu-skel
+ Xenia fork  --nui=pipe          --nui_skeleton_inject=pipe:kinectemu-skel   (+ --allow_avatar_initialization=true)
     |   depth reaches the title as if it came from a Kinect (PsCamDeviceRequest)
     |   the skeleton replaces the tracker's output at the title runtime's frame callback
     v
@@ -56,6 +56,7 @@ Tested on exactly one machine: HP Victus 15 (i7-12650H, RTX 4050 + Intel UHD, HP
 
 - Depth keeps flowing because the title's runtime makes one skeleton frame per depth frame. Injection rewrites that frame before the game, the HUD or the logs see it. Details and evidence: [docs/NUI_IMPLEMENTATION.md](docs/NUI_IMPLEMENTATION.md).
 - Xenia finds the injection site by code signature, not by fixed address.
+- Xenia must be started with `--allow_avatar_initialization=true`. The game's activities read an avatar pawn that it drives from the skeleton. Without the flag there is no pawn: the raft is empty and stepping or jumping does nothing, while menus still work. `run_live.ps1` passes it.
 - Everything stays on the machine. Pipes are local only. There is no network access at runtime.
 
 ## Requirements

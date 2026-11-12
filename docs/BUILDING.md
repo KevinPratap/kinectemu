@@ -107,6 +107,7 @@ Expect `NUI: replaying ... (90 frames)` in `replay.log`. With no game loaded, ST
 | `--nui_skeleton_inject=test` | Skeleton injection from a built-in test figure: 2.2 m away, sways, jumps |
 | `--nui_skeleton_inject=pipe:<name>` | Skeleton injection from a second local pipe. 376-byte records, used while under 250 ms old; with no fresh record the game gets its own tracker's frames. Default name in the scripts: `kinectemu-skel` |
 | `--nui_tilt_override=0` | Pin the virtual tilt at 0 degrees. The title kept moving the virtual tilt, which the synthetic depth ignores |
+| `--allow_avatar_initialization=true` | **Required for gameplay.** Lets xam's avatar initialisation succeed. Without it Kinect Adventures shuts its avatar system down: the raft is empty and no activity takes body input (steps, jumps), even though menus and the hand cursor work. `scripts\run_live.ps1` and the harness pass it |
 | `--nui_log_play_frames=N` | Log the title's skeleton and player mask every N frames. The harness uses this to grade |
 | `--flush_log=true --log_file=<path>` | Write the log to a file and flush as it goes, so a crash or a killed process still leaves it |
 
