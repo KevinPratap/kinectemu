@@ -1,0 +1,22 @@
+# Runtime pins for tools/phase0 (Python 3.11, Windows).
+#
+# IMPORTANT: install in two steps. rtmlib must be installed with --no-deps,
+# because its own dependencies pull in a conflicting plain onnxruntime:
+#
+#   python -m pip install -r tools/requirements.txt
+#   python -m pip install --no-deps rtmlib==0.0.16
+#
+# onnxruntime-directml and pygrabber are Windows-only (DirectML, DirectShow).
+
+mediapipe==1.2.0
+numpy==2.4.6
+onnxruntime-directml==1.24.4
+opencv-contrib-python==5.0.0.93
+pygrabber==0.2
+tqdm==4.70.1
+protobuf==7.36.2
+flatbuffers==25.12.19
+
+# rtmlib: must be installed with --no-deps (see top of file). Kept as a comment
+# so a plain `pip install -r` does not resolve its dependencies.
+# rtmlib==0.0.16

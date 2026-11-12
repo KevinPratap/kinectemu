@@ -1,0 +1,36 @@
+From b0ed0cea014442fe50ebb46b1015fa98626d1613 Mon Sep 17 00:00:00 2001
+From: Kevin Pratap Sidhu <pratapkevin8@gmail.com>
+Date: Thu, 12 Nov 2026 12:18:59 +0530
+Subject: [PATCH 4/4] build: use backslash path for vswhere so the build script
+ runs from cmd/PowerShell on Windows
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ xenia-build.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/xenia-build.py b/xenia-build.py
+index 14f78f5..ce31093 100755
+--- a/xenia-build.py
++++ b/xenia-build.py
+@@ -212,7 +212,7 @@ def import_vs_environment():
+     env_tool_args = None
+ 
+     vswhere = subprocess.check_output(
+-        "tools/vswhere/vswhere.exe -version \"[17,)\" -latest -prerelease -format json -utf8 -products"
++        "tools\\vswhere\\vswhere.exe -version \"[17,)\" -latest -prerelease -format json -utf8 -products"
+         " Microsoft.VisualStudio.Product.Enterprise"
+         " Microsoft.VisualStudio.Product.Professional"
+         " Microsoft.VisualStudio.Product.Community"
+@@ -2133,7 +2133,7 @@ class DevenvCommand(Command):
+                 # otherwise pick a VS without ARM64 support.
+                 try:
+                     vswhere_out = subprocess.check_output(
+-                        "tools/vswhere/vswhere.exe"
++                        "tools\\vswhere\\vswhere.exe"
+                         ' -version "[17,)" -latest -prerelease'
+                         " -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+                         " -format json -utf8"
+-- 
+2.52.0.windows.1
+

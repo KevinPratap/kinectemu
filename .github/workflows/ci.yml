@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check .
+
+  selftest:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install numpy opencv-python-headless
+      - name: Compile all scripts
+        shell: bash
+        run: |
+          for f in tools/phase0/*.py tools/fetch_models.py; do python -m py_compile "$f"; done
+      - name: fetch_models imports
+        run: python tools/fetch_models.py --help
+      - name: calibrate_intrinsics self-test
+        working-directory: tools/phase0
+        run: python calibrate_intrinsics.py --selftest
+      - name: latency_flash_test self-test
+        working-directory: tools/phase0
+        run: python latency_flash_test.py --selftest

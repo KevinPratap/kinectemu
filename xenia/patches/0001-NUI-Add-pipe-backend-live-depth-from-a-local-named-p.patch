@@ -1,0 +1,497 @@
+From d0c7335c579e171245df2cb95ba725e3e1b1da9c Mon Sep 17 00:00:00 2001
+From: Kevin Pratap Sidhu <pratapkevin8@gmail.com>
+Date: Tue, 3 Nov 2026 12:38:35 +0530
+Subject: [PATCH 1/4] [NUI] Add pipe backend: live depth from a local named
+ pipe
+
+--nui=pipe --nui_pipe=<name> serves \\.\pipe\<name> and publishes the
+depth frames another local process writes into it, as a live .xdepth
+stream (DepthRecordingHeader, then frames). It lets a host-side depth
+source that is not a Kinect, such as a webcam pipeline that synthesises
+depth, drive a title without being built into xenia.
+
+Inbound only, one client, remote clients rejected. Overlapped I/O, so
+Shutdown() returns while a read is pending. When the writer goes away
+the last frame stays current and the pipe is offered again. Tilt
+follows the replay backend's requested-angle model. Windows only;
+"any" picks it only when nui_pipe names a pipe.
+
+Tested: xenia-nui-tests pass (81 cases, 37142 assertions); Kinect
+Adventures (4D5308ED) reached its title screen with a PLAYING player on
+5100 recorded frames streamed through the pipe, and logged the writer
+leaving and the wait for the next one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/xenia/CMakeLists.txt              |   1 +
+ src/xenia/app/CMakeLists.txt          |   1 +
+ src/xenia/app/xenia_main.cc           |   5 +-
+ src/xenia/nui/nui_flags.cc            |   5 +
+ src/xenia/nui/nui_flags.h             |   1 +
+ src/xenia/nui/pipe/CMakeLists.txt     |   4 +
+ src/xenia/nui/pipe/pipe_nui_system.cc | 267 ++++++++++++++++++++++++++
+ src/xenia/nui/pipe/pipe_nui_system.h  |  87 +++++++++
+ 8 files changed, 370 insertions(+), 1 deletion(-)
+ create mode 100644 src/xenia/nui/pipe/CMakeLists.txt
+ create mode 100644 src/xenia/nui/pipe/pipe_nui_system.cc
+ create mode 100644 src/xenia/nui/pipe/pipe_nui_system.h
+
+diff --git a/src/xenia/CMakeLists.txt b/src/xenia/CMakeLists.txt
+index 815e0b9..b365e40 100644
+--- a/src/xenia/CMakeLists.txt
++++ b/src/xenia/CMakeLists.txt
+@@ -58,5 +58,6 @@ if(WIN32)
+   add_subdirectory(gpu/d3d12)
+   add_subdirectory(hid/xinput)
+   add_subdirectory(nui/kinect)
++  add_subdirectory(nui/pipe)
+   add_subdirectory(ui/d3d12)
+ endif()
+diff --git a/src/xenia/app/CMakeLists.txt b/src/xenia/app/CMakeLists.txt
+index dac03e6..5884391 100644
+--- a/src/xenia/app/CMakeLists.txt
++++ b/src/xenia/app/CMakeLists.txt
+@@ -114,6 +114,7 @@ if(WIN32)
+     xenia-gpu-d3d12
+     xenia-hid-xinput
+     xenia-nui-kinect
++    xenia-nui-pipe
+     xenia-ui-d3d12
+   )
+ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+diff --git a/src/xenia/app/xenia_main.cc b/src/xenia/app/xenia_main.cc
+index f06988c..2ab4319 100644
+--- a/src/xenia/app/xenia_main.cc
++++ b/src/xenia/app/xenia_main.cc
+@@ -73,13 +73,14 @@
+ #include "xenia/nui/replay/replay_nui_system.h"
+ #if XE_PLATFORM_WIN32
+ #include "xenia/nui/kinect/kinect_nui_system.h"
++#include "xenia/nui/pipe/pipe_nui_system.h"
+ #endif  // XE_PLATFORM_WIN32
+ 
+ #if XE_PLATFORM_WIN32
+ #define APU_OPTIONS "[any, nop, sdl, xaudio2]"
+ #define GPU_OPTIONS "[any, d3d12, vulkan, null]"
+ #define HID_OPTIONS "[any, nop, sdl, keyboard, xinput]"
+-#define NUI_OPTIONS "[any, kinect, replay, nop]"
++#define NUI_OPTIONS "[any, kinect, pipe, replay, nop]"
+ #elif XE_PLATFORM_LINUX
+ #define APU_OPTIONS "[any, alsa, nop, sdl]"
+ #define GPU_OPTIONS "[any, vulkan, null]"
+@@ -502,6 +503,8 @@ std::unique_ptr<nui::NuiSystem> EmulatorApp::CreateNuiSystem() {
+   // run into a real recording session.
+   factory.Add<nui::replay::ReplayNuiSystem>("replay");
+ #if XE_PLATFORM_WIN32
++  // Like the replay, only available when its cvar names a pipe.
++  factory.Add<nui::pipe::PipeNuiSystem>("pipe");
+   factory.Add<nui::kinect::KinectNuiSystem>("kinect");
+ #endif  // XE_PLATFORM_WIN32
+   // With no recording named and no runtime installed, "any" falls past both
+diff --git a/src/xenia/nui/nui_flags.cc b/src/xenia/nui/nui_flags.cc
+index 130e0b7..86419a6 100644
+--- a/src/xenia/nui/nui_flags.cc
++++ b/src/xenia/nui/nui_flags.cc
+@@ -49,6 +49,11 @@ DEFINE_string(nui_replay, "",
+               "when it ends.",
+               "Kinect");
+ 
++DEFINE_string(nui_pipe, "",
++              "Name of a local named pipe (\\\\.\\pipe\\<name>) another "
++              "process writes live .xdepth frames into, for --nui=pipe.",
++              "Kinect");
++
+ DEFINE_bool(nui_guide_gesture, true,
+             "Watch the skeletons a Kinect title hands xam for the Kinect Guide "
+             "gesture, the left arm held still out to the side and down at "
+diff --git a/src/xenia/nui/nui_flags.h b/src/xenia/nui/nui_flags.h
+index 197b30f..52dd1f6 100644
+--- a/src/xenia/nui/nui_flags.h
++++ b/src/xenia/nui/nui_flags.h
+@@ -22,6 +22,7 @@ DECLARE_bool(nui_accelerometer);
+ DECLARE_bool(nui_show_depth_preview);
+ DECLARE_string(nui_record);
+ DECLARE_string(nui_replay);
++DECLARE_string(nui_pipe);
+ DECLARE_bool(nui_guide_gesture);
+ DECLARE_int32(nui_guide_angle_min);
+ DECLARE_int32(nui_guide_angle_max);
+diff --git a/src/xenia/nui/pipe/CMakeLists.txt b/src/xenia/nui/pipe/CMakeLists.txt
+new file mode 100644
+index 0000000..b939a4f
+--- /dev/null
++++ b/src/xenia/nui/pipe/CMakeLists.txt
+@@ -0,0 +1,4 @@
++add_library(xenia-nui-pipe STATIC)
++xe_platform_sources(xenia-nui-pipe ${CMAKE_CURRENT_SOURCE_DIR})
++target_link_libraries(xenia-nui-pipe PUBLIC xenia-base xenia-nui)
++xe_target_defaults(xenia-nui-pipe)
+diff --git a/src/xenia/nui/pipe/pipe_nui_system.cc b/src/xenia/nui/pipe/pipe_nui_system.cc
+new file mode 100644
+index 0000000..ed92d6f
+--- /dev/null
++++ b/src/xenia/nui/pipe/pipe_nui_system.cc
+@@ -0,0 +1,267 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/nui/pipe/pipe_nui_system.h"
++
++#include <algorithm>
++#include <cstring>
++
++#include "xenia/base/logging.h"
++#include "xenia/base/platform_win.h"
++#include "xenia/nui/depth_recording.h"
++#include "xenia/nui/nui_flags.h"
++
++namespace xe {
++namespace nui {
++namespace pipe {
++
++namespace {
++
++constexpr size_t kSampleBytes =
++    size_t(DepthFrame::kWidth) * DepthFrame::kHeight * sizeof(uint16_t);
++
++// Pipe names are spelled by the user on the command line; anything outside
++// this set is refused rather than escaped.
++bool IsValidPipeName(const std::string& name) {
++  return !name.empty() && name.size() <= 200 &&
++         std::all_of(name.begin(), name.end(), [](char c) {
++           return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
++                  (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
++         });
++}
++
++}  // namespace
++
++bool PipeNuiSystem::IsAvailable() { return !cvars::nui_pipe.empty(); }
++
++PipeNuiSystem::PipeNuiSystem() = default;
++
++PipeNuiSystem::~PipeNuiSystem() {
++  ClosePipe();
++  if (io_event_) {
++    CloseHandle(io_event_);
++  }
++  if (shutdown_event_) {
++    CloseHandle(shutdown_event_);
++  }
++}
++
++X_STATUS PipeNuiSystem::Setup(kernel::KernelState* kernel_state) {
++  X_STATUS result = NuiSystem::Setup(kernel_state);
++  if (result != X_STATUS_SUCCESS) {
++    return result;
++  }
++  const std::string& name = cvars::nui_pipe;
++  if (!IsValidPipeName(name)) {
++    XELOGE(
++        "NUI: nui_pipe \"{}\" is not a usable pipe name (letters, digits, - _ "
++        ". only).",
++        name);
++    return X_STATUS_UNSUCCESSFUL;
++  }
++  // The name is ASCII (checked above), so widening it char by char is exact.
++  pipe_path_utf8_ = "\\\\.\\pipe\\" + name;
++  pipe_path_ = std::wstring(pipe_path_utf8_.begin(), pipe_path_utf8_.end());
++
++  io_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++  shutdown_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++  if (!io_event_ || !shutdown_event_) {
++    XELOGE("NUI: failed to create the depth pipe's events.");
++    return X_STATUS_UNSUCCESSFUL;
++  }
++
++  worker_running_.store(true, std::memory_order_release);
++  worker_thread_ =
++      threading::Thread::Create({}, [this]() { WorkerThreadMain(); });
++  if (!worker_thread_) {
++    XELOGE("NUI: failed to start the depth pipe thread.");
++    worker_running_.store(false, std::memory_order_release);
++    return X_STATUS_UNSUCCESSFUL;
++  }
++  worker_thread_->set_name("NUI Pipe");
++  return X_STATUS_SUCCESS;
++}
++
++void PipeNuiSystem::Shutdown() {
++  worker_running_.store(false, std::memory_order_release);
++  if (worker_thread_) {
++    // Every wait in the worker also waits on this event, and a pending read is
++    // cancelled when it fires, so the join comes back.
++    SetEvent(shutdown_event_);
++    threading::Wait(worker_thread_.get(), false);
++    worker_thread_.reset();
++  }
++  ClosePipe();
++  NuiSystem::Shutdown();
++}
++
++void PipeNuiSystem::ClosePipe() {
++  if (pipe_) {
++    DisconnectNamedPipe(pipe_);
++    CloseHandle(pipe_);
++    pipe_ = nullptr;
++  }
++}
++
++bool PipeNuiSystem::AcceptClient() {
++  // Single instance, inbound only, and remote clients refused: depth frames
++  // come from this machine and go nowhere else.
++  pipe_ = CreateNamedPipeW(pipe_path_.c_str(),
++                           PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED |
++                               FILE_FLAG_FIRST_PIPE_INSTANCE,
++                           PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
++                               PIPE_REJECT_REMOTE_CLIENTS,
++                           1, 0, DWORD(2 * kSampleBytes), 0, nullptr);
++  if (pipe_ == INVALID_HANDLE_VALUE) {
++    pipe_ = nullptr;
++    XELOGE(
++        "NUI: could not create the depth pipe (error {}); is another xenia "
++        "already serving it?",
++        GetLastError());
++    return false;
++  }
++
++  OVERLAPPED overlapped = {};
++  overlapped.hEvent = io_event_;
++  ResetEvent(io_event_);
++  if (ConnectNamedPipe(pipe_, &overlapped)) {
++    return true;
++  }
++  DWORD error = GetLastError();
++  if (error == ERROR_PIPE_CONNECTED) {
++    return true;
++  }
++  if (error != ERROR_IO_PENDING) {
++    XELOGE("NUI: waiting for a depth pipe writer failed (error {}).", error);
++    return false;
++  }
++  HANDLE handles[] = {shutdown_event_, io_event_};
++  if (WaitForMultipleObjects(2, handles, FALSE, INFINITE) !=
++      WAIT_OBJECT_0 + 1) {
++    CancelIoEx(pipe_, &overlapped);
++    DWORD ignored;
++    GetOverlappedResult(pipe_, &overlapped, &ignored, TRUE);
++    return false;
++  }
++  DWORD ignored;
++  return GetOverlappedResult(pipe_, &overlapped, &ignored, FALSE) != 0;
++}
++
++bool PipeNuiSystem::ReadExact(void* buffer, size_t size) {
++  auto* out = static_cast<uint8_t*>(buffer);
++  while (size) {
++    OVERLAPPED overlapped = {};
++    overlapped.hEvent = io_event_;
++    ResetEvent(io_event_);
++    DWORD read = 0;
++    DWORD chunk = DWORD(std::min<size_t>(size, 1u << 20));
++    if (!ReadFile(pipe_, out, chunk, &read, &overlapped)) {
++      if (GetLastError() != ERROR_IO_PENDING) {
++        return false;
++      }
++      HANDLE handles[] = {shutdown_event_, io_event_};
++      if (WaitForMultipleObjects(2, handles, FALSE, INFINITE) !=
++          WAIT_OBJECT_0 + 1) {
++        CancelIoEx(pipe_, &overlapped);
++        GetOverlappedResult(pipe_, &overlapped, &read, TRUE);
++        return false;
++      }
++      if (!GetOverlappedResult(pipe_, &overlapped, &read, FALSE)) {
++        return false;
++      }
++    }
++    if (!read) {
++      return false;
++    }
++    out += read;
++    size -= read;
++  }
++  return true;
++}
++
++void PipeNuiSystem::WorkerThreadMain() {
++  const std::string& path_utf8 = pipe_path_utf8_;
++  // The device is there as soon as the pipe is: a title that boots before the
++  // writer starts sees a sensor with nobody in front of it, not no sensor.
++  SetDeviceStatus(DeviceStatus::kInitializing);
++  SetDeviceStatus(DeviceStatus::kReady);
++
++  while (worker_running_.load(std::memory_order_acquire)) {
++    XELOGI("NUI: waiting for a depth writer on {}", path_utf8);
++    if (!AcceptClient()) {
++      ClosePipe();
++      if (worker_running_.load(std::memory_order_acquire)) {
++        SetDeviceStatus(DeviceStatus::kError);
++      }
++      break;
++    }
++
++    DepthRecordingHeader header = {};
++    if (!ReadExact(&header, sizeof(header)) ||
++        std::memcmp(header.magic, kDepthRecordingMagic, sizeof(header.magic)) ||
++        header.width != DepthFrame::kWidth ||
++        header.height != DepthFrame::kHeight) {
++      XELOGE(
++          "NUI: the depth pipe writer did not send a {}x{} depth recording "
++          "header; dropping it.",
++          DepthFrame::kWidth, DepthFrame::kHeight);
++      ClosePipe();
++      continue;
++    }
++    XELOGI("NUI: depth writer connected on {}", path_utf8);
++
++    uint64_t client_frames = 0;
++    while (worker_running_.load(std::memory_order_acquire)) {
++      DepthRecordingFrameHeader frame_header;
++      auto frame = frame_pool_.Acquire();
++      if (!ReadExact(&frame_header, sizeof(frame_header)) ||
++          !ReadExact(frame->depth_mm.data(), kSampleBytes)) {
++        break;
++      }
++      PublishFrame(std::move(frame));
++      ++client_frames;
++      if ((++published_frame_count_ % kFrameLogInterval) == 0) {
++        XELOGI("NUI: {} depth frames received from the pipe",
++               published_frame_count_);
++      }
++    }
++    if (worker_running_.load(std::memory_order_acquire)) {
++      XELOGI(
++          "NUI: depth writer on {} went away after {} frames; the last frame "
++          "stays current until the next one connects",
++          path_utf8, client_frames);
++    }
++    ClosePipe();
++  }
++}
++
++bool PipeNuiSystem::GetTiltDegrees(int32_t* out_degrees) {
++  if (!out_degrees || !IsDevicePresent()) {
++    return false;
++  }
++  if (GetTiltOverrideDegrees(out_degrees)) {
++    return true;
++  }
++  *out_degrees = tilt_degrees_.load(std::memory_order_acquire);
++  return true;
++}
++
++bool PipeNuiSystem::SetTiltDegrees(int32_t degrees) {
++  if (!IsDevicePresent() || !cvars::nui_allow_tilt) {
++    return false;
++  }
++  tilt_degrees_.store(
++      std::clamp(degrees, kTiltMinimumDegrees, kTiltMaximumDegrees),
++      std::memory_order_release);
++  return true;
++}
++
++}  // namespace pipe
++}  // namespace nui
++}  // namespace xe
+diff --git a/src/xenia/nui/pipe/pipe_nui_system.h b/src/xenia/nui/pipe/pipe_nui_system.h
+new file mode 100644
+index 0000000..6ad5308
+--- /dev/null
++++ b/src/xenia/nui/pipe/pipe_nui_system.h
+@@ -0,0 +1,87 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_NUI_PIPE_PIPE_NUI_SYSTEM_H_
++#define XENIA_NUI_PIPE_PIPE_NUI_SYSTEM_H_
++
++#include <atomic>
++#include <cstdint>
++#include <memory>
++#include <string>
++
++#include "xenia/base/threading.h"
++#include "xenia/nui/depth_frame_pool.h"
++#include "xenia/nui/nui_system.h"
++
++namespace xe {
++namespace nui {
++namespace pipe {
++
++// A NUI system that publishes depth frames another process on this machine
++// writes into a named pipe, \\.\pipe\<nui_pipe>, as they arrive. The stream is
++// a .xdepth recording sent live: one DepthRecordingHeader, then frames. It is
++// how a host-side depth source that is not a Kinect - a webcam pipeline that
++// synthesises depth, say - drives a title without being built into xenia.
++//
++// The pipe takes local clients only, one at a time. When the writer goes away
++// the pipe is opened again for the next one, and the last frame stays the
++// latest until then.
++class PipeNuiSystem : public NuiSystem {
++ public:
++  PipeNuiSystem();
++  ~PipeNuiSystem() override;
++
++  // True only when the nui_pipe cvar names a pipe, so --nui=any never picks
++  // this backend unasked.
++  static bool IsAvailable();
++
++  std::string name() const override { return "Depth pipe"; }
++
++  X_STATUS Setup(kernel::KernelState* kernel_state) override;
++  void Shutdown() override;
++
++  bool GetTiltDegrees(int32_t* out_degrees) override;
++  bool SetTiltDegrees(int32_t degrees) override;
++
++ private:
++  static constexpr uint64_t kFrameLogInterval = 300;
++
++  void WorkerThreadMain();
++  // Creates the pipe and waits for a writer. Returns false on shutdown or when
++  // the pipe cannot be created.
++  bool AcceptClient();
++  // Reads exactly size bytes from the connected writer. Returns false when the
++  // writer went away or shutdown was asked for.
++  bool ReadExact(void* buffer, size_t size);
++  void ClosePipe();
++
++  std::wstring pipe_path_;
++  std::string pipe_path_utf8_;
++  // Win32 handles, kept as void* so this header does not pull in windows.h.
++  void* pipe_ = nullptr;
++  void* io_event_ = nullptr;
++  void* shutdown_event_ = nullptr;
++
++  std::unique_ptr<threading::Thread> worker_thread_;
++  std::atomic<bool> worker_running_ = {false};
++
++  // Touched by the worker thread only.
++  uint64_t published_frame_count_ = 0;
++  DepthFramePool frame_pool_;
++
++  // No motor behind a pipe: the angle a title last asked for is the angle it
++  // reads back, as with a replay.
++  std::atomic<int32_t> tilt_degrees_ = {0};
++};
++
++}  // namespace pipe
++}  // namespace nui
++}  // namespace xe
++
++#endif  // XENIA_NUI_PIPE_PIPE_NUI_SYSTEM_H_
+-- 
+2.52.0.windows.1
+

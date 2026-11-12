@@ -1,6 +1,6 @@
 # STATUS
 
-Last update: 2026-11-03. Current phase: **0 (feasibility)**. No feature code exists yet.
+Last update: 2026-11-12. Current phase: **0 (feasibility)**. Emulator code exists as four Xenia patches (`xenia/patches/`, see [xenia/README.md](../xenia/README.md)); the rest is Phase 0 tooling under `tools/phase0/`. Repository published 2026-11-12 with README, setup and launch scripts.
 
 ## Works on real hardware
 - HP Wide Vision HD delivers 30 fps at 640×480 and 1280×720 under auto exposure in normal room light (`docs/data/webcam_probe.json`).
@@ -101,7 +101,7 @@ Last update: 2026-11-03. Current phase: **0 (feasibility)**. No feature code exi
 - The ryantimjohn fork already has a working guest depth path with a clean host plug-in point (`xe::nui::NuiSystem::PublishFrame`, depth in mm). It's verified on one title, `4D5308ED`, which matches Kinect Adventures. The webcam backend is most likely one `NuiSystem` subclass publishing synthetic mm depth plus gravity. Full guest contract: [PSCAM_CONTRACT.md](PSCAM_CONTRACT.md).
 
 ## Mocked / faked / stubbed
-- Emulator code so far: one backend, `--nui=pipe`, on the fork branch `kinectemu-pipe-backend` (not committed yet). Everything else is Phase 0 scripts (`tools/phase0/`).
+- Emulator code so far: the `--nui=pipe` depth backend and the skeleton injection (`--nui_skeleton_inject`), both on the fork branch `kinectemu-skeleton-inject` and mirrored as `xenia/patches/0001`–`0004`. Everything else is Phase 0 scripts (`tools/phase0/`).
 - The pipe backend reports a ready sensor as soon as the pipe exists. With no writer connected, the title sees a sensor with nobody in front of it.
 - `synth_depth.py` synthesises depth by design: PnP placement on MediaPipe's average-adult scale, nearest-landmark Z, and a 100 mm rounded relief. There's no floor or background (0 = no reading).
 

@@ -1,0 +1,14 @@
+target-version = "py311"
+line-length = 120
+extend-exclude = [
+    "external",
+    "models",
+    "fixtures",
+    "runs",
+    "tools/.venv",
+    "tools/.venv-convert",
+]
+
+[lint]
+# Syntax errors and undefined names only. Widen later.
+select = ["E9", "F63", "F7", "F82"]

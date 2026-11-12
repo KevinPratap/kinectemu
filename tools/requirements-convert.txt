@@ -1,0 +1,8 @@
+# Pins for the separate TFLite -> ONNX conversion venv (tools/.venv-convert).
+# Keep it apart from the runtime venv: it needs numpy<2 and TensorFlow.
+tensorflow-cpu==2.15.1
+tf2onnx==1.16.1
+numpy<2
+onnx
+onnxruntime
+opencv-python-headless<4.11

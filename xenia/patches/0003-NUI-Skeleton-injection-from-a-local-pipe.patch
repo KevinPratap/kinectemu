@@ -1,0 +1,824 @@
+From d4cabac0d84671e8f54e3474548d25bddf735c66 Mon Sep 17 00:00:00 2001
+From: Kevin Pratap Sidhu <pratapkevin8@gmail.com>
+Date: Tue, 3 Nov 2026 17:57:51 +0530
+Subject: [PATCH 3/4] [NUI] Skeleton injection from a local pipe
+
+--nui_skeleton_inject=pipe:<name> serves \.\pipe\<name> and injects
+the poses another local process writes into it: one fixed-size
+SkeletonPipeRecord per tracker frame (magic XNUISKL1, tracking id, 20
+joints in the title's sensor space with their tracking states, and an
+optional floor plane). Local clients only, one writer at a time,
+offered again when the writer leaves.
+
+Records are checked before use: a body must have a tracking id and
+finite joints in front of the sensor, joint states must be ones the
+runtime knows, a floor must have a unit normal. A record that fails is
+dropped whole. The newest valid record is injected while it is under
+250 ms old; with none fresh, frames go to the title as its tracker made
+them, and the log says when that starts and stops. A record without a
+body empties the slots. Its floor plane replaces the tracker's fit.
+
+Tested: xenia-nui-tests pass (88 cases, 37279 assertions; 2 new for
+the record reader). Kinect Adventures (4D5308ED) with --nui=pipe and
+synth_depth.py --live replaying recorded frames into both pipes: the
+writer connected, injection took poses from runtime frame 8, and every
+logged play frame carried the pipe's body with one id and its floor.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/nui.md                                   |  26 +-
+ src/xenia/kernel/xam/nui_state.cc             |  70 +++-
+ src/xenia/kernel/xam/nui_state.h              |   8 +
+ src/xenia/nui/nui_flags.cc                    |   3 +-
+ src/xenia/nui/nui_skeleton_inject.cc          |   7 +
+ src/xenia/nui/nui_skeleton_inject.h           |   4 +
+ src/xenia/nui/nui_skeleton_pipe.cc            | 337 ++++++++++++++++++
+ src/xenia/nui/nui_skeleton_pipe.h             | 105 ++++++
+ .../nui/testing/nui_skeleton_site_test.cc     |  84 +++++
+ 9 files changed, 629 insertions(+), 15 deletions(-)
+ create mode 100644 src/xenia/nui/nui_skeleton_pipe.cc
+ create mode 100644 src/xenia/nui/nui_skeleton_pipe.h
+
+diff --git a/docs/nui.md b/docs/nui.md
+index 66fb7db..3d30688 100644
+--- a/docs/nui.md
++++ b/docs/nui.md
+@@ -613,12 +613,26 @@ it.
+ 
+ ## Skeleton injection
+ 
+-`--nui_skeleton_inject=test` replaces every skeleton the title's own tracker
+-fits with one xenia supplies, so that a skeleton from another tracker can
+-drive the title. The only source so far, `test`, is a synthetic figure 2.2 m
+-from the sensor that sways 0.35 m to either side over six seconds and jumps
+-0.25 m every four; it is not anyone's pose. With the flag empty, the default,
+-nothing below happens.
++`--nui_skeleton_inject=<source>` replaces every skeleton the title's own
++tracker fits with one xenia supplies, so that a skeleton from another tracker
++can drive the title. With the flag empty, the default, nothing below happens.
++There are two sources:
++
++* `test` is a synthetic figure 2.2 m from the sensor that sways 0.35 m to
++  either side over six seconds and jumps 0.25 m every four. It is not anyone's
++  pose.
++* `pipe:<name>` takes poses another process on this machine writes into
++  `\.\pipe\<name>`: one 376-byte `SkeletonPipeRecord` per tracker frame
++  (`src/xenia/nui/nui_skeleton_pipe.h`). Each record holds the magic `XNUISKL1`,
++  a tracking id, 20 joints in the title's sensor space (metres) with their
++  tracking states, and optionally a floor plane. The pipe is local only and
++  takes one writer at a time.
++  * A record whose body is not in front of the sensor is dropped.
++  * The newest valid record is injected while it is under 250 ms old. A record
++    without a body empties all six slots.
++  * With no fresh record, frames go to the title as its tracker made them, and
++    the log says when that starts and stops.
++  * The record's floor plane, when it has one, replaces the tracker's.
+ 
+ **Where.** After the runtime's frame producer has filled a skeleton frame and
+ before it publishes it, the producer calls a six-instruction thunk that calls
+diff --git a/src/xenia/kernel/xam/nui_state.cc b/src/xenia/kernel/xam/nui_state.cc
+index c4dcc0a..8402ad1 100644
+--- a/src/xenia/kernel/xam/nui_state.cc
++++ b/src/xenia/kernel/xam/nui_state.cc
+@@ -225,6 +225,7 @@ void NuiState::OnTitleTerminated() {
+     skeleton_inject_bound_ = false;
+     skeleton_site_ = xe::nui::SkeletonFrameSite();
+     skeleton_injected_frames_ = 0;
++    skeleton_pipe_.reset();
+   }
+ 
+   // A feed that stopped and requests that were deliberately never answered are
+@@ -549,10 +550,13 @@ void NuiState::BindSkeletonInjection() {
+     return;
+   }
+   skeleton_inject_tried_ = true;
+-  if (source != "test") {
++  constexpr std::string_view kPipePrefix = "pipe:";
++  const bool from_pipe = source.rfind(kPipePrefix, 0) == 0;
++  if (source != "test" && !from_pipe) {
+     XELOGW(
+         "NUI: nui_skeleton_inject \"{}\" is not a skeleton source xenia has "
+-        "(\"test\"); the title keeps its own tracker's skeletons.",
++        "(\"test\" or \"pipe:<name>\"); the title keeps its own tracker's "
++        "skeletons.",
+         source);
+     return;
+   }
+@@ -621,9 +625,23 @@ void NuiState::BindSkeletonInjection() {
+   function->set_end_address(address + 4);
+   function->set_status(cpu::Symbol::Status::kDeclared);
+ 
++  if (from_pipe) {
++    // Until a writer sends a pose, the thunk passes frames through untouched.
++    skeleton_pipe_ = std::make_unique<xe::nui::SkeletonPipe>();
++    if (!skeleton_pipe_->Start(source.substr(kPipePrefix.size()))) {
++      skeleton_pipe_.reset();
++      XELOGW(
++          "NUI: skeleton injection: the skeleton pipe could not be served; "
++          "the title keeps its own tracker's skeletons.");
++    }
++  }
+   skeleton_site_ = site;
+   skeleton_inject_bound_ = true;
++  skeleton_source_test_ = !from_pipe;
+   skeleton_injected_frames_ = 0;
++  skeleton_pipe_fresh_ = false;
++  skeleton_frames_from_pipe_ = 0;
++  skeleton_frames_left_alone_ = 0;
+   skeleton_inject_start_ = std::chrono::steady_clock::now();
+   XELOGI(
+       "NUI: skeleton injection (source \"{}\"): NuiSkeletonGetNextFrame at "
+@@ -671,12 +689,48 @@ uint32_t NuiState::OnSkeletonFrameReady(uint32_t frame_ptr) {
+         callback ? fmt::format(", then the runtime's callback {:08X}", callback)
+                  : std::string());
+   }
+-  const double seconds =
+-      std::chrono::duration<double>(std::chrono::steady_clock::now() -
+-                                    skeleton_inject_start_)
+-          .count();
+-  const xe::nui::InjectedBody body = xe::nui::MakeTestPatternBody(seconds);
+-  xe::nui::WriteInjectedSkeletons(frame, &body, 0);
++  if (skeleton_source_test_) {
++    const double seconds =
++        std::chrono::duration<double>(std::chrono::steady_clock::now() -
++                                      skeleton_inject_start_)
++            .count();
++    const xe::nui::InjectedBody body = xe::nui::MakeTestPatternBody(seconds);
++    xe::nui::WriteInjectedSkeletons(frame, &body, 0);
++    return callback;
++  }
++
++  // A pose older than a few camera frames no longer says where the player is;
++  // the frame then goes on as the title's tracker made it.
++  constexpr auto kFreshPose = std::chrono::milliseconds(250);
++  xe::nui::SkeletonPipeRecord record;
++  std::chrono::steady_clock::duration age;
++  xe::nui::InjectedBody body;
++  bool has_body = false, has_floor = false;
++  float floor_plane[4];
++  const bool fresh = skeleton_pipe_ && skeleton_pipe_->Latest(&record, &age) &&
++                     age < kFreshPose &&
++                     xe::nui::ReadSkeletonPipeRecord(record, &body, &has_body,
++                                                     floor_plane, &has_floor);
++  if (fresh != skeleton_pipe_fresh_) {
++    skeleton_pipe_fresh_ = fresh;
++    XELOGI(
++        "NUI: skeleton injection {} at runtime frame {} ({} frames from the "
++        "pipe, {} left to the tracker so far).",
++        fresh ? "takes poses from the pipe"
++              : "has no fresh pose; frames go on as the title's tracker made "
++                "them",
++        xe::load_and_swap<uint32_t>(frame + 8), skeleton_frames_from_pipe_,
++        skeleton_frames_left_alone_);
++  }
++  if (!fresh) {
++    ++skeleton_frames_left_alone_;
++    return callback;
++  }
++  ++skeleton_frames_from_pipe_;
++  xe::nui::WriteInjectedSkeletons(frame, has_body ? &body : nullptr, 0);
++  if (has_floor) {
++    xe::nui::WriteInjectedFloorPlane(frame, floor_plane);
++  }
+   return callback;
+ }
+ 
+diff --git a/src/xenia/kernel/xam/nui_state.h b/src/xenia/kernel/xam/nui_state.h
+index f86b8b7..b5235d1 100644
+--- a/src/xenia/kernel/xam/nui_state.h
++++ b/src/xenia/kernel/xam/nui_state.h
+@@ -27,6 +27,7 @@
+ #include "xenia/kernel/xam/nui_messages.h"
+ #include "xenia/kernel/xam/nui_runtime_state.h"
+ #include "xenia/kernel/xam/nui_tilt_status.h"
++#include "xenia/nui/nui_skeleton_pipe.h"
+ #include "xenia/nui/nui_skeleton_site.h"
+ #include "xenia/nui/nui_system.h"
+ #include "xenia/xbox.h"
+@@ -389,9 +390,16 @@ class NuiState {
+   std::mutex skeleton_inject_mutex_;
+   bool skeleton_inject_tried_ = false;
+   bool skeleton_inject_bound_ = false;
++  bool skeleton_source_test_ = false;
+   xe::nui::SkeletonFrameSite skeleton_site_;
+   uint64_t skeleton_injected_frames_ = 0;
+   std::chrono::steady_clock::time_point skeleton_inject_start_;
++  // Source "pipe:<name>": the newest pose another local process sent. While
++  // there is none fresh, frames are left as the tracker made them.
++  std::unique_ptr<xe::nui::SkeletonPipe> skeleton_pipe_;
++  bool skeleton_pipe_fresh_ = false;
++  uint64_t skeleton_frames_from_pipe_ = 0;
++  uint64_t skeleton_frames_left_alone_ = 0;
+ };
+ 
+ }  // namespace xam
+diff --git a/src/xenia/nui/nui_flags.cc b/src/xenia/nui/nui_flags.cc
+index 47d41c4..2275228 100644
+--- a/src/xenia/nui/nui_flags.cc
++++ b/src/xenia/nui/nui_flags.cc
+@@ -58,7 +58,8 @@ DEFINE_string(nui_skeleton_inject, "",
+               "Replace the skeletons a Kinect title's own tracker fits with "
+               "ones xenia supplies, at the title runtime's frame callback. "
+               "\"test\" injects a synthetic swaying, jumping test figure; "
+-              "empty is off.",
++              "\"pipe:<name>\" injects the poses another local process "
++              "writes into \\\\.\\pipe\\<name>; empty is off.",
+               "Kinect");
+ 
+ DEFINE_bool(nui_guide_gesture, true,
+diff --git a/src/xenia/nui/nui_skeleton_inject.cc b/src/xenia/nui/nui_skeleton_inject.cc
+index 2f2ad93..3e80572 100644
+--- a/src/xenia/nui/nui_skeleton_inject.cc
++++ b/src/xenia/nui/nui_skeleton_inject.cc
+@@ -97,6 +97,13 @@ void WriteInjectedSkeletons(uint8_t* frame, const InjectedBody* body,
+   }
+ }
+ 
++void WriteInjectedFloorPlane(uint8_t* frame, const float plane[4]) {
++  constexpr size_t kFloorPlaneOffset = 0x10;
++  for (size_t n = 0; n < 4; ++n) {
++    StoreF32(frame + kFloorPlaneOffset + n * 4, plane[n]);
++  }
++}
++
+ InjectedBody MakeTestPatternBody(double seconds) {
+   constexpr double kPi = 3.14159265358979323846;
+   constexpr double kSwayPeriod = 6.0, kSwayAmplitude = 0.35;
+diff --git a/src/xenia/nui/nui_skeleton_inject.h b/src/xenia/nui/nui_skeleton_inject.h
+index dc0e200..74eaf7f 100644
+--- a/src/xenia/nui/nui_skeleton_inject.h
++++ b/src/xenia/nui/nui_skeleton_inject.h
+@@ -89,6 +89,10 @@ struct InjectedBody {
+ void WriteInjectedSkeletons(uint8_t* frame, const InjectedBody* body,
+                             uint32_t slot);
+ 
++// Overwrites the frame's floor clip plane (+0x10): unit normal, then the
++// sensor's height above the floor in metres.
++void WriteInjectedFloorPlane(uint8_t* frame, const float plane[4]);
++
+ // A synthetic test body for checking the injection path without a camera: a
+ // standing figure 2.2 m from the sensor that sways 0.35 m to either side over
+ // six seconds and jumps 0.25 m every four. It is not anyone's pose.
+diff --git a/src/xenia/nui/nui_skeleton_pipe.cc b/src/xenia/nui/nui_skeleton_pipe.cc
+new file mode 100644
+index 0000000..f4648ac
+--- /dev/null
++++ b/src/xenia/nui/nui_skeleton_pipe.cc
+@@ -0,0 +1,337 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/nui/nui_skeleton_pipe.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstring>
++
++#include "xenia/base/logging.h"
++#include "xenia/base/platform.h"
++#include "xenia/base/threading.h"
++
++#if XE_PLATFORM_WIN32
++#include "xenia/base/platform_win.h"
++#endif
++
++namespace xe {
++namespace nui {
++
++namespace {
++
++// Further than a Kinect reads, or behind it, is not a body in front of it.
++constexpr float kNearestBodyMetres = 0.3f;
++constexpr float kFarthestBodyMetres = 6.0f;
++constexpr float kLargestLateralMetres = 6.0f;
++
++bool IsPlausiblePoint(const float p[3]) {
++  return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) &&
++         p[2] >= kNearestBodyMetres && p[2] <= kFarthestBodyMetres &&
++         std::abs(p[0]) <= kLargestLateralMetres &&
++         std::abs(p[1]) <= kLargestLateralMetres;
++}
++
++// Pipe names are spelled by the user on the command line; anything outside
++// this set is refused rather than escaped, as for the depth pipe.
++bool IsValidPipeName(const std::string& name) {
++  return !name.empty() && name.size() <= 200 &&
++         std::all_of(name.begin(), name.end(), [](char c) {
++           return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
++                  (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
++         });
++}
++
++}  // namespace
++
++bool ReadSkeletonPipeRecord(const SkeletonPipeRecord& record,
++                            InjectedBody* body, bool* has_body,
++                            float floor_plane[4], bool* has_floor) {
++  *has_body = false;
++  *has_floor = false;
++  if (std::memcmp(record.magic, kSkeletonPipeMagic, sizeof(record.magic))) {
++    return false;
++  }
++  if (record.flags & kSkeletonPipeBody) {
++    if (!record.tracking_id || !IsPlausiblePoint(record.position)) {
++      return false;
++    }
++    InjectedBody read;
++    read.tracking_id = record.tracking_id;
++    read.position = {record.position[0], record.position[1], record.position[2],
++                     kInjectJointTracked};
++    for (uint32_t n = 0; n < kInjectJointCount; ++n) {
++      const uint32_t state = record.joint_states[n];
++      if (state > kInjectJointTracked ||
++          (state != kInjectJointNotTracked &&
++           !IsPlausiblePoint(record.joints[n]))) {
++        return false;
++      }
++      // A joint the writer did not place reads as zeros, as the runtime's
++      // own publisher leaves it.
++      read.joints[n] =
++          state == kInjectJointNotTracked
++              ? InjectedJoint()
++              : InjectedJoint{record.joints[n][0], record.joints[n][1],
++                              record.joints[n][2], state};
++    }
++    *body = read;
++    *has_body = true;
++  }
++  if (record.flags & kSkeletonPipeFloor) {
++    const float* f = record.floor_plane;
++    const float normal = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
++    if (!std::isfinite(normal) || !std::isfinite(f[3]) ||
++        std::abs(normal - 1.0f) > 0.01f || f[3] <= 0.0f ||
++        f[3] > kFarthestBodyMetres) {
++      *has_body = false;
++      return false;
++    }
++    std::copy(f, f + 4, floor_plane);
++    *has_floor = true;
++  }
++  return true;
++}
++
++void SkeletonPipe::Store(const SkeletonPipeRecord& record) {
++  std::lock_guard<std::mutex> lock(latest_mutex_);
++  latest_ = record;
++  latest_time_ = std::chrono::steady_clock::now();
++  has_latest_ = true;
++}
++
++bool SkeletonPipe::Latest(SkeletonPipeRecord* record,
++                          std::chrono::steady_clock::duration* age) const {
++  std::lock_guard<std::mutex> lock(latest_mutex_);
++  if (!has_latest_) {
++    return false;
++  }
++  *record = latest_;
++  *age = std::chrono::steady_clock::now() - latest_time_;
++  return true;
++}
++
++#if XE_PLATFORM_WIN32
++
++struct SkeletonPipe::Impl {
++  explicit Impl(SkeletonPipe* owner) : owner(owner) {}
++  ~Impl() {
++    ClosePipe();
++    if (io_event) {
++      CloseHandle(io_event);
++    }
++    if (shutdown_event) {
++      CloseHandle(shutdown_event);
++    }
++  }
++
++  void ClosePipe() {
++    if (pipe) {
++      DisconnectNamedPipe(pipe);
++      CloseHandle(pipe);
++      pipe = nullptr;
++    }
++  }
++
++  // Waits for the overlapped operation or for shutdown. False on shutdown or
++  // failure, with the operation cancelled.
++  bool Finish(OVERLAPPED* overlapped, DWORD* transferred) {
++    HANDLE handles[] = {shutdown_event, io_event};
++    if (WaitForMultipleObjects(2, handles, FALSE, INFINITE) !=
++        WAIT_OBJECT_0 + 1) {
++      CancelIoEx(pipe, overlapped);
++      GetOverlappedResult(pipe, overlapped, transferred, TRUE);
++      return false;
++    }
++    return GetOverlappedResult(pipe, overlapped, transferred, FALSE) != 0;
++  }
++
++  bool AcceptClient() {
++    // Single instance, inbound only, remote clients refused: poses come from
++    // this machine and go nowhere else.
++    pipe = CreateNamedPipeW(path.c_str(),
++                            PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED |
++                                FILE_FLAG_FIRST_PIPE_INSTANCE,
++                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
++                                PIPE_REJECT_REMOTE_CLIENTS,
++                            1, 0, DWORD(64 * sizeof(SkeletonPipeRecord)), 0,
++                            nullptr);
++    if (pipe == INVALID_HANDLE_VALUE) {
++      pipe = nullptr;
++      XELOGE(
++          "NUI: could not create the skeleton pipe {} (error {}); is another "
++          "xenia already serving it?",
++          path_utf8, GetLastError());
++      return false;
++    }
++    OVERLAPPED overlapped = {};
++    overlapped.hEvent = io_event;
++    ResetEvent(io_event);
++    if (ConnectNamedPipe(pipe, &overlapped)) {
++      return true;
++    }
++    const DWORD error = GetLastError();
++    if (error == ERROR_PIPE_CONNECTED) {
++      return true;
++    }
++    if (error != ERROR_IO_PENDING) {
++      XELOGE("NUI: waiting for a skeleton writer failed (error {}).", error);
++      return false;
++    }
++    DWORD ignored;
++    return Finish(&overlapped, &ignored);
++  }
++
++  bool ReadExact(void* buffer, size_t size) {
++    auto* out = static_cast<uint8_t*>(buffer);
++    while (size) {
++      OVERLAPPED overlapped = {};
++      overlapped.hEvent = io_event;
++      ResetEvent(io_event);
++      DWORD read = 0;
++      if (!ReadFile(pipe, out, DWORD(size), &read, &overlapped)) {
++        if (GetLastError() != ERROR_IO_PENDING || !Finish(&overlapped, &read)) {
++          return false;
++        }
++      }
++      if (!read) {
++        return false;
++      }
++      out += read;
++      size -= read;
++    }
++    return true;
++  }
++
++  void Run() {
++    while (running.load(std::memory_order_acquire)) {
++      XELOGI("NUI: waiting for a skeleton writer on {}", path_utf8);
++      if (!AcceptClient()) {
++        ClosePipe();
++        break;
++      }
++      XELOGI("NUI: skeleton writer connected on {}", path_utf8);
++      owner->SetWriterConnected(true);
++      uint64_t records = 0, dropped = 0;
++      SkeletonPipeRecord record;
++      while (running.load(std::memory_order_acquire) &&
++             ReadExact(&record, sizeof(record))) {
++        InjectedBody body;
++        bool has_body, has_floor;
++        float floor[4];
++        if (!ReadSkeletonPipeRecord(record, &body, &has_body, floor,
++                                    &has_floor)) {
++          // A record that is not even framed right means the stream is out
++          // of step; a fresh connection is the only way back into it.
++          if (std::memcmp(record.magic, kSkeletonPipeMagic,
++                          sizeof(record.magic))) {
++            XELOGE(
++                "NUI: the skeleton writer on {} sent a record without the "
++                "{} magic; dropping it.",
++                path_utf8, std::string(kSkeletonPipeMagic, 8));
++            break;
++          }
++          if (dropped++ == 0) {
++            XELOGW(
++                "NUI: dropped a skeleton record that does not describe a "
++                "body in front of the sensor; later ones are counted.");
++          }
++          continue;
++        }
++        owner->Store(record);
++        ++records;
++      }
++      owner->SetWriterConnected(false);
++      if (running.load(std::memory_order_acquire)) {
++        XELOGI(
++            "NUI: skeleton writer on {} went away after {} records ({} "
++            "dropped)",
++            path_utf8, records, dropped);
++      }
++      ClosePipe();
++    }
++  }
++
++  SkeletonPipe* owner;
++  std::wstring path;
++  std::string path_utf8;
++  HANDLE pipe = nullptr;
++  HANDLE io_event = nullptr;
++  HANDLE shutdown_event = nullptr;
++  std::atomic<bool> running = {false};
++  std::unique_ptr<threading::Thread> thread;
++};
++
++SkeletonPipe::SkeletonPipe() = default;
++
++SkeletonPipe::~SkeletonPipe() { Stop(); }
++
++bool SkeletonPipe::Start(const std::string& name) {
++  Stop();
++  if (!IsValidPipeName(name)) {
++    XELOGE(
++        "NUI: \"{}\" is not a usable skeleton pipe name (letters, digits, - _ "
++        ". only).",
++        name);
++    return false;
++  }
++  auto impl = std::make_unique<Impl>(this);
++  impl->path_utf8 = "\\\\.\\pipe\\" + name;
++  // ASCII only (checked above), so widening char by char is exact.
++  impl->path = std::wstring(impl->path_utf8.begin(), impl->path_utf8.end());
++  impl->io_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++  impl->shutdown_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++  if (!impl->io_event || !impl->shutdown_event) {
++    XELOGE("NUI: failed to create the skeleton pipe's events.");
++    return false;
++  }
++  impl->running.store(true, std::memory_order_release);
++  Impl* raw = impl.get();
++  impl->thread = threading::Thread::Create({}, [raw]() { raw->Run(); });
++  if (!impl->thread) {
++    XELOGE("NUI: failed to start the skeleton pipe thread.");
++    return false;
++  }
++  impl->thread->set_name("NUI Skeleton Pipe");
++  impl_ = std::move(impl);
++  return true;
++}
++
++void SkeletonPipe::Stop() {
++  if (!impl_) {
++    return;
++  }
++  impl_->running.store(false, std::memory_order_release);
++  if (impl_->thread) {
++    // Every wait in the thread also waits on this event.
++    SetEvent(impl_->shutdown_event);
++    threading::Wait(impl_->thread.get(), false);
++  }
++  impl_.reset();
++  SetWriterConnected(false);
++}
++
++#else
++
++struct SkeletonPipe::Impl {};
++
++SkeletonPipe::SkeletonPipe() = default;
++SkeletonPipe::~SkeletonPipe() = default;
++
++bool SkeletonPipe::Start(const std::string& name) {
++  XELOGE("NUI: the skeleton pipe \"{}\" needs Windows named pipes.", name);
++  return false;
++}
++
++void SkeletonPipe::Stop() {}
++
++#endif  // XE_PLATFORM_WIN32
++
++}  // namespace nui
++}  // namespace xe
+diff --git a/src/xenia/nui/nui_skeleton_pipe.h b/src/xenia/nui/nui_skeleton_pipe.h
+new file mode 100644
+index 0000000..1cb16c9
+--- /dev/null
++++ b/src/xenia/nui/nui_skeleton_pipe.h
+@@ -0,0 +1,105 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_NUI_NUI_SKELETON_PIPE_H_
++#define XENIA_NUI_NUI_SKELETON_PIPE_H_
++
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <memory>
++#include <mutex>
++#include <string>
++
++#include "xenia/nui/nui_skeleton_inject.h"
++
++namespace xe {
++namespace nui {
++
++// One skeleton as another process on this machine sends it for injection
++// (nui_skeleton_inject=pipe:<name>): a fixed-size record per tracker frame,
++// little endian like the .xdepth stream, already in the title's sensor space
++// (metres; x grows with the column of the depth image the title is given, y
++// up, z away from the sensor). Nothing in it reaches guest memory as it is.
++constexpr char kSkeletonPipeMagic[8] = {'X', 'N', 'U', 'I', 'S', 'K', 'L', '1'};
++
++struct SkeletonPipeRecord {
++  char magic[8];
++  // The writer's own clock; only logged.
++  uint64_t timestamp_us;
++  uint32_t flags;
++  // Never 0 when kSkeletonPipeBody is set.
++  uint32_t tracking_id;
++  float position[3];
++  uint32_t reserved;
++  float joints[kInjectJointCount][3];
++  // kInjectJointNotTracked, kInjectJointInferred or kInjectJointTracked.
++  uint32_t joint_states[kInjectJointCount];
++  // Floor clip plane: unit normal and the sensor's height above the floor in
++  // metres, used when kSkeletonPipeFloor is set.
++  float floor_plane[4];
++};
++static_assert(sizeof(SkeletonPipeRecord) == 376,
++              "The record is sent over the pipe as it is laid out.");
++
++constexpr uint32_t kSkeletonPipeBody = 1u << 0;
++constexpr uint32_t kSkeletonPipeFloor = 1u << 1;
++
++// Checks a record as it came off the pipe: the magic, a body with a tracking
++// id and finite coordinates in front of the sensor, joint states the runtime
++// knows, a floor with a unit normal. Fills body (when the record has one) and
++// floor_plane (when it has one) and returns false for anything else, so that
++// a malformed record is dropped rather than half-used.
++bool ReadSkeletonPipeRecord(const SkeletonPipeRecord& record,
++                            InjectedBody* body, bool* has_body,
++                            float floor_plane[4], bool* has_floor);
++
++// Serves \\.\pipe\<name> on a thread of its own and keeps the newest valid
++// record. Local clients only, one at a time; when the writer goes away the
++// pipe is offered again. Windows only: Start fails elsewhere.
++class SkeletonPipe {
++ public:
++  SkeletonPipe();
++  ~SkeletonPipe();
++
++  // Starts serving. Returns false, after logging why, when the name is not a
++  // usable pipe name or the pipe cannot be served.
++  bool Start(const std::string& name);
++  void Stop();
++
++  // The newest valid record and how long ago it arrived. False before the
++  // first one.
++  bool Latest(SkeletonPipeRecord* record,
++              std::chrono::steady_clock::duration* age) const;
++
++  bool writer_connected() const {
++    return writer_connected_.load(std::memory_order_acquire);
++  }
++
++ private:
++  struct Impl;
++  std::unique_ptr<Impl> impl_;
++
++  mutable std::mutex latest_mutex_;
++  bool has_latest_ = false;
++  SkeletonPipeRecord latest_ = {};
++  std::chrono::steady_clock::time_point latest_time_;
++  std::atomic<bool> writer_connected_ = {false};
++
++  // Called by the implementation's thread.
++  void Store(const SkeletonPipeRecord& record);
++  void SetWriterConnected(bool connected) {
++    writer_connected_.store(connected, std::memory_order_release);
++  }
++};
++
++}  // namespace nui
++}  // namespace xe
++
++#endif  // XENIA_NUI_NUI_SKELETON_PIPE_H_
+diff --git a/src/xenia/nui/testing/nui_skeleton_site_test.cc b/src/xenia/nui/testing/nui_skeleton_site_test.cc
+index 0561d90..c8afb82 100644
+--- a/src/xenia/nui/testing/nui_skeleton_site_test.cc
++++ b/src/xenia/nui/testing/nui_skeleton_site_test.cc
+@@ -11,10 +11,12 @@
+ 
+ #include <algorithm>
+ #include <cstring>
++#include <limits>
+ #include <vector>
+ 
+ #include "third_party/catch/include/catch.hpp"
+ #include "xenia/nui/nui_skeleton_inject.h"
++#include "xenia/nui/nui_skeleton_pipe.h"
+ 
+ namespace xe {
+ namespace nui {
+@@ -260,6 +262,88 @@ TEST_CASE("The test figure sways and jumps in front of the sensor",
+   CHECK(rest.tracking_id != 0);
+ }
+ 
++namespace {
++
++SkeletonPipeRecord StandingRecord() {
++  SkeletonPipeRecord record = {};
++  std::memcpy(record.magic, kSkeletonPipeMagic, sizeof(record.magic));
++  record.flags = kSkeletonPipeBody | kSkeletonPipeFloor;
++  record.tracking_id = 3;
++  const InjectedBody body = MakeTestPatternBody(0.0);
++  record.position[0] = body.position.x;
++  record.position[1] = body.position.y;
++  record.position[2] = body.position.z;
++  for (uint32_t n = 0; n < kInjectJointCount; ++n) {
++    record.joints[n][0] = body.joints[n].x;
++    record.joints[n][1] = body.joints[n].y;
++    record.joints[n][2] = body.joints[n].z;
++    record.joint_states[n] = kInjectJointTracked;
++  }
++  record.floor_plane[1] = 1.0f;
++  record.floor_plane[3] = 0.9f;
++  return record;
++}
++
++}  // namespace
++
++TEST_CASE("A skeleton pipe record becomes a body and a floor",
++          "[nui][skeleton]") {
++  SkeletonPipeRecord record = StandingRecord();
++  record.joint_states[kInjectHandLeft] = kInjectJointInferred;
++  record.joint_states[kInjectFootRight] = kInjectJointNotTracked;
++  record.joints[kInjectFootRight][2] = 0.0f;  // unplaced, so not checked
++  InjectedBody body;
++  bool has_body, has_floor;
++  float floor[4];
++  REQUIRE(ReadSkeletonPipeRecord(record, &body, &has_body, floor, &has_floor));
++  CHECK(has_body);
++  CHECK(has_floor);
++  CHECK(body.tracking_id == 3);
++  CHECK(body.position.z == Approx(2.2f));
++  CHECK(body.joints[kInjectHead].y == Approx(record.joints[kInjectHead][1]));
++  CHECK(body.joints[kInjectHandLeft].tracking_state == kInjectJointInferred);
++  CHECK(body.joints[kInjectFootRight].tracking_state == kInjectJointNotTracked);
++  CHECK(body.joints[kInjectFootRight].y == 0.0f);
++  CHECK(floor[1] == 1.0f);
++  CHECK(floor[3] == Approx(0.9f));
++
++  // No body and no floor is a valid record: nobody in view.
++  record.flags = 0;
++  REQUIRE(ReadSkeletonPipeRecord(record, &body, &has_body, floor, &has_floor));
++  CHECK_FALSE(has_body);
++  CHECK_FALSE(has_floor);
++}
++
++TEST_CASE("A skeleton pipe record that is not a body in view is refused",
++          "[nui][skeleton]") {
++  InjectedBody body;
++  bool has_body, has_floor;
++  float floor[4];
++  auto refused = [&](SkeletonPipeRecord record) {
++    return !ReadSkeletonPipeRecord(record, &body, &has_body, floor,
++                                   &has_floor) &&
++           !has_body && !has_floor;
++  };
++  SkeletonPipeRecord record = StandingRecord();
++  record.magic[7] = '2';
++  CHECK(refused(record));
++  record = StandingRecord();
++  record.tracking_id = 0;
++  CHECK(refused(record));
++  record = StandingRecord();
++  record.joints[kInjectHead][2] = -1.0f;  // behind the sensor
++  CHECK(refused(record));
++  record = StandingRecord();
++  record.joints[kInjectHandRight][0] = std::numeric_limits<float>::quiet_NaN();
++  CHECK(refused(record));
++  record = StandingRecord();
++  record.joint_states[kInjectSpine] = 7;
++  CHECK(refused(record));
++  record = StandingRecord();
++  record.floor_plane[1] = 0.5f;  // not a unit normal
++  CHECK(refused(record));
++}
++
+ }  // namespace test
+ }  // namespace nui
+ }  // namespace xe
+-- 
+2.52.0.windows.1
+

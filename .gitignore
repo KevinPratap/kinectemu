@@ -7,3 +7,6 @@ tools/.venv-convert/
 onnxruntime_profile_*.json
 external/
 runs/
+*.xdepth
+*.log
+nul

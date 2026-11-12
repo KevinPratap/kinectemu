@@ -1,0 +1,1369 @@
+From a31aa3f66379bc4385da05ff6034f049fc888570 Mon Sep 17 00:00:00 2001
+From: Kevin Pratap Sidhu <pratapkevin8@gmail.com>
+Date: Tue, 3 Nov 2026 13:22:47 +0530
+Subject: [PATCH 2/4] [NUI] Skeleton injection at the title runtime's frame
+ callback
+
+--nui_skeleton_inject=test replaces every skeleton the title's own
+tracker fits with one xenia supplies, so that a skeleton from another
+tracker can drive the title ("Option B"). The only source so far is a
+synthetic swaying, jumping test figure.
+
+The site is found by code, not by address: NuiSkeletonGetNextFrame by
+PS5X360's signature, then the runtime state block, slot ring and frame
+offset read out of its instructions, then the one thunk that calls
+through a function pointer in that block, which the frame producer
+calls once a frame is filled and before it is published. Each step must
+match exactly once. The thunk is bound like an import (sc 2; blr plus an
+extern handler) at message 0x2B003, before the camera worker runs. The
+handler rewrites the six skeleton slots, keeping the frame header and
+each slot's enrollment and user index words, and still calls the
+runtime's callback when one is set. NuiSkeletonGetNextFrame, the HUD
+message 0x2B002, the Kinect Guide and the play-frame log all see the
+injected skeleton.
+
+Also corrects the X_NUI_SKELETON_DATA comment: the runtime's identity
+pass writes the enrollment and user index (-1 and 0xFE seen).
+
+Tested: xenia-nui-tests pass (86 cases, 37259 assertions; 5 new).
+Kinect Adventures (4D5308ED, module hash FC152DDFE29E856E) on a
+webcam-synthesised replay: site found and bound; every play-frame line
+carries the test figure with a stable id; the title completed its
+play-space setup ("GOOD SPACE!") within 90 s, where the same replay
+without injection was still at "MOVE BACK AS FAR AS YOU CAN" with the
+tracker's ids changing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/nui.md                                   |  47 +++
+ src/xenia/kernel/xam/nui_messages.h           |   5 +-
+ src/xenia/kernel/xam/nui_state.cc             | 192 ++++++++++++
+ src/xenia/kernel/xam/nui_state.h              |  26 ++
+ src/xenia/nui/nui_flags.cc                    |   7 +
+ src/xenia/nui/nui_flags.h                     |   1 +
+ src/xenia/nui/nui_skeleton_inject.cc          | 126 ++++++++
+ src/xenia/nui/nui_skeleton_inject.h           | 100 ++++++
+ src/xenia/nui/nui_skeleton_site.cc            | 288 ++++++++++++++++++
+ src/xenia/nui/nui_skeleton_site.h             |  88 ++++++
+ .../nui/testing/nui_skeleton_site_test.cc     | 265 ++++++++++++++++
+ 11 files changed, 1143 insertions(+), 2 deletions(-)
+ create mode 100644 src/xenia/nui/nui_skeleton_inject.cc
+ create mode 100644 src/xenia/nui/nui_skeleton_inject.h
+ create mode 100644 src/xenia/nui/nui_skeleton_site.cc
+ create mode 100644 src/xenia/nui/nui_skeleton_site.h
+ create mode 100644 src/xenia/nui/testing/nui_skeleton_site_test.cc
+
+diff --git a/docs/nui.md b/docs/nui.md
+index 0311ea5..66fb7db 100644
+--- a/docs/nui.md
++++ b/docs/nui.md
+@@ -98,6 +98,7 @@ These flags are in the `Kinect` category of `xenia-canary.config.toml`, except
+ | `--nui` | `any` | Backend: `any`, `kinect`, `replay` or `nop`. |
+ | `--nui_log_messages` | `false` | NUI calls, messages and buffer dumps, content opens and camera requests. Camera state queries log at Info when the answer changes and at Debug on every query. With `--log_level=3`, also logs the guide recogniser's trace. |
+ | `--nui_log_play_frames` | `0` | Log the title's skeletons and texture summaries every N-th skeleton frame; 0 disables it. |
++| `--nui_skeleton_inject` | empty (off) | Replace the skeletons the title's tracker fits with xenia's; `test` is a synthetic test figure. See "Skeleton injection". |
+ | `--nui_show_depth_preview` | `false` | Show the Kinect Depth overlay. |
+ | `--nui_record` | empty | Record published host depth frames to this file. |
+ | `--nui_replay` | empty | File played by the replay backend. |
+@@ -610,6 +611,52 @@ physical memory. For those views `NuiState::IsGuestRangeReadable`, which the
+ camera transport uses, is not asked; an address in any other heap falls back to
+ it.
+ 
++## Skeleton injection
++
++`--nui_skeleton_inject=test` replaces every skeleton the title's own tracker
++fits with one xenia supplies, so that a skeleton from another tracker can
++drive the title. The only source so far, `test`, is a synthetic figure 2.2 m
++from the sensor that sways 0.35 m to either side over six seconds and jumps
++0.25 m every four; it is not anyone's pose. With the flag empty, the default,
++nothing below happens.
++
++**Where.** After the runtime's frame producer has filled a skeleton frame and
++before it publishes it, the producer calls a six-instruction thunk that calls
++through a function pointer in the runtime's state block when that pointer is
++set: `lis; lwz; cmplwi; beqlr; mtctr; bctr`. xenia finds
++`NuiSkeletonGetNextFrame` by the signature PS5X360 uses for it (a 0xAB0-byte
++copy, a wait clamped to 8000 ms, a conversion to 100 ns units and
++`0x8007048F`), reads the state block, the slot ring and the frame's offset in a
++slot out of its instructions, and then looks for that thunk, calling through a
++pointer inside the state block. Each step must find exactly one match, and the
++thunk exactly one caller. The thunk is bound to the host the way xenia binds an
++import (`sc 2; blr` and an extern handler) when the title registers its
++runtime with message 0x2B003, before the camera worker runs. The handler
++rewrites the frame's six skeleton slots, keeping each slot's enrollment index
++and user index words, which the runtime's identity pass writes. It then calls
++the runtime's own callback when the pointer is set; the pointer was null in
++every run so far. The frame's header is left as the runtime wrote it: timestamp, frame number, flags,
++floor plane and gravity. So `NuiSkeletonGetNextFrame`, the HUD message 0x2B002, the Kinect
++Guide and the play-frame log all see the injected skeleton.
++
++```
++NUI: skeleton injection (source "test"): NuiSkeletonGetNextFrame at 82D26768, runtime state at 83896510, frame slots at +A70 every AE0 with the frame at +20, frame callback thunk at 82D263C0 (pointer at 83898DFC) called from 82D222C8, now bound to the host.
++NUI: skeleton injection frame 900 (runtime frame 1638): replaced tracker slots [0:1/402/-1/254 1:1/403/-1/254 2:0/0/-1/254 3:0/0/-1/254 4:0/0/-1/254 5:0/0/-1/254]
++```
++
++The addresses are from a different disc revision of `4D5308ED` (module hash
++`FC152DDFE29E856E`) than the rest of this document. The second line repeats
++about every 900 frames. It lists what the tracker had put in each slot, as
++`slot:state/id/enrollment index/user index`. Any step that fails is logged at
++Warning, and the title keeps its own tracker's skeletons.
++
++**What still comes from the depth path.** The producer runs once per depth
++frame, so depth frames must keep flowing; they pace the skeleton frames. The
++floor plane is still the tracker's fit to the depth image. The player-index
++textures are still the tracker's segmentation, numbered by the tracker's own
++slots: with the test figure in slot 0, the mask held indices 5, 3 or 1 from
++frame to frame.
++
+ ## Protocol reference
+ 
+ What title `4D5308ED`'s NUI runtime asks of xam and the kernel, and how xenia
+diff --git a/src/xenia/kernel/xam/nui_messages.h b/src/xenia/kernel/xam/nui_messages.h
+index 7ebc1ea..7f0a418 100644
+--- a/src/xenia/kernel/xam/nui_messages.h
++++ b/src/xenia/kernel/xam/nui_messages.h
+@@ -55,8 +55,9 @@ struct X_NUI_SKELETON_DATA {
+   xe::be<uint32_t> tracking_state;  // +0
+   xe::be<uint32_t> tracking_id;     // +4
+   // The publisher memsets the whole array and then writes only the fields
+-  // around these two, so for this runtime version they are always zero: they
+-  // are not a channel xam fills in.
++  // around these two; the runtime's identity pass, when it runs, then writes
++  // them for every slot (-1 and 0xFE, "not recognised", on the disc revision
++  // with module hash FC152DDFE29E856E). They are not a channel xam fills in.
+   xe::be<uint32_t> enrollment_index;  // +8
+   xe::be<uint32_t> user_index;        // +12
+   // Where the skeleton is, in millimetres from the sensor.
+diff --git a/src/xenia/kernel/xam/nui_state.cc b/src/xenia/kernel/xam/nui_state.cc
+index cc75034..c4dcc0a 100644
+--- a/src/xenia/kernel/xam/nui_state.cc
++++ b/src/xenia/kernel/xam/nui_state.cc
+@@ -17,17 +17,23 @@
+ #include <limits>
+ 
+ #include "xenia/base/logging.h"
++#include "xenia/cpu/ppc/ppc_context.h"
++#include "xenia/cpu/processor.h"
++#include "xenia/cpu/xex_module.h"
+ #include "xenia/emulator.h"
+ #include "xenia/gpu/command_processor.h"
+ #include "xenia/kernel/kernel_state.h"
++#include "xenia/kernel/user_module.h"
+ #include "xenia/kernel/util/guest_range.h"
+ #include "xenia/kernel/xam/nui_camera.h"
+ #include "xenia/kernel/xam/nui_guide_frame.h"
+ #include "xenia/kernel/xam/nui_messages.h"
+ #include "xenia/kernel/xam/nui_player_mask.h"
++#include "xenia/kernel/xam/xam_state.h"
+ #include "xenia/kernel/xconfig.h"
+ #include "xenia/nui/nui_flags.h"
+ #include "xenia/nui/nui_gpu_readback.h"
++#include "xenia/nui/nui_skeleton_inject.h"
+ 
+ namespace xe {
+ namespace kernel {
+@@ -54,6 +60,40 @@ const char* GuideArmName(NuiGuideArm arm) {
+   }
+ }
+ 
++// The title runtime's frame callback thunk, once BindSkeletonInjection has
++// bound it: r3 is the finished NUI_SKELETON_FRAME. The thunk's own job, calling
++// through the runtime's callback pointer when it is set, is kept, after the
++// frame has been rewritten.
++void SkeletonFrameCallbackThunk(cpu::ppc::PPCContext* ppc_context,
++                                KernelState* kernel_state) {
++  const uint32_t frame_ptr = static_cast<uint32_t>(ppc_context->r[3]);
++  NuiState* nui_state = kernel_state->xam_state()
++                            ? kernel_state->xam_state()->nui_state()
++                            : nullptr;
++  const uint32_t callback =
++      nui_state ? nui_state->OnSkeletonFrameReady(frame_ptr) : 0;
++  if (callback) {
++    uint64_t args[] = {frame_ptr};
++    ppc_context->r[3] = kernel_state->processor()->Execute(
++        ppc_context->thread_state, callback, args, 1);
++  }
++}
++
++// What the frame's slots held before they were rewritten, for the log.
++std::string DescribeSkeletonSlots(const uint8_t* frame) {
++  std::string slots;
++  for (uint32_t n = 0; n < xe::nui::kInjectSkeletonCount; ++n) {
++    const uint8_t* skeleton = frame + xe::nui::kInjectSkeletonDataOffset +
++                              n * xe::nui::kInjectSkeletonDataBytes;
++    fmt::format_to(std::back_inserter(slots), "{}{}:{}/{}/{}/{}", n ? " " : "",
++                   n, xe::load_and_swap<uint32_t>(skeleton),
++                   xe::load_and_swap<uint32_t>(skeleton + 4),
++                   xe::load_and_swap<int32_t>(skeleton + 8),
++                   xe::load_and_swap<uint32_t>(skeleton + 12));
++  }
++  return slots;
++}
++
+ uint64_t NowUs() {
+   return static_cast<uint64_t>(
+       std::chrono::duration_cast<std::chrono::microseconds>(
+@@ -178,6 +218,14 @@ void NuiState::OnTitleTerminated() {
+   const NuiCameraTermination termination = camera_->OnTitleTerminated();
+ 
+   ResetRuntime(false);
++  {
++    // The bound thunk went with the title's code.
++    std::lock_guard<std::mutex> lock(skeleton_inject_mutex_);
++    skeleton_inject_tried_ = false;
++    skeleton_inject_bound_ = false;
++    skeleton_site_ = xe::nui::SkeletonFrameSite();
++    skeleton_injected_frames_ = 0;
++  }
+ 
+   // A feed that stopped and requests that were deliberately never answered are
+   // exactly what a later "the title froze waiting for a completion" question
+@@ -485,9 +533,153 @@ X_HRESULT NuiState::HandleHudInitialize(uint32_t buffer_ptr,
+   // Enable only after a valid registration; invalid messages cannot change
+   // another title's GPU read-back settings.
+   EnableSkeletalTrackerReadback();
++  // The frame callback has to be bound before the title's code first calls
++  // it, and the camera worker that produces frames is still suspended here.
++  BindSkeletonInjection();
+   return X_E_SUCCESS;
+ }
+ 
++void NuiState::BindSkeletonInjection() {
++  const std::string source = cvars::nui_skeleton_inject;
++  if (source.empty()) {
++    return;
++  }
++  std::lock_guard<std::mutex> lock(skeleton_inject_mutex_);
++  if (skeleton_inject_tried_) {
++    return;
++  }
++  skeleton_inject_tried_ = true;
++  if (source != "test") {
++    XELOGW(
++        "NUI: nui_skeleton_inject \"{}\" is not a skeleton source xenia has "
++        "(\"test\"); the title keeps its own tracker's skeletons.",
++        source);
++    return;
++  }
++  auto module = kernel_state_->GetExecutableModule();
++  cpu::XexModule* xex = module ? module->xex_module() : nullptr;
++  if (!xex) {
++    XELOGW("NUI: skeleton injection: the title has no XEX image to search.");
++    return;
++  }
++  const uint32_t base = xex->base_address();
++  const uint32_t size = xex->image_size();
++  if (!IsGuestRangeReadable(base, size)) {
++    XELOGW(
++        "NUI: skeleton injection: the title's image {:08X}+{:08X} is not all "
++        "readable; the title keeps its own tracker's skeletons.",
++        base, size);
++    return;
++  }
++  Memory* memory = kernel_state_->memory();
++  xe::nui::SkeletonFrameSite site;
++  size_t candidates = 0;
++  const xe::nui::SkeletonSiteStatus status = xe::nui::FindSkeletonFrameSite(
++      memory->TranslateVirtual<const uint8_t*>(base), size, base, &site,
++      &candidates);
++  if (status != xe::nui::SkeletonSiteStatus::kFound) {
++    XELOGW(
++        "NUI: skeleton injection: {} ({} candidates); the title keeps its own "
++        "tracker's skeletons.",
++        xe::nui::SkeletonSiteStatusName(status), candidates);
++    return;
++  }
++
++  // Bound the way xenia binds an import: "sc 2; blr" at the thunk and a host
++  // handler on the function, before the guest can have compiled it. The
++  // producer calls the thunk only once frames flow.
++  const uint32_t address = site.frame_callback;
++  cpu::Function* function = nullptr;
++  const cpu::Symbol::Status symbol = xex->DeclareFunction(address, &function);
++  if (!function || (symbol != cpu::Symbol::Status::kNew &&
++                    symbol != cpu::Symbol::Status::kDeclared)) {
++    XELOGW(
++        "NUI: skeleton injection: the frame callback thunk at {:08X} is "
++        "already compiled; the title keeps its own tracker's skeletons.",
++        address);
++    return;
++  }
++  BaseHeap* heap = memory->LookupHeap(address);
++  uint32_t protection = 0;
++  if (!heap || !heap->QueryProtect(address, &protection) ||
++      !heap->Protect(address, 8, kMemoryProtectRead | kMemoryProtectWrite)) {
++    if (symbol == cpu::Symbol::Status::kNew) {
++      function->set_status(cpu::Symbol::Status::kDeclared);
++    }
++    XELOGW(
++        "NUI: skeleton injection: the frame callback thunk at {:08X} cannot "
++        "be written; the title keeps its own tracker's skeletons.",
++        address);
++    return;
++  }
++  static_cast<cpu::GuestFunction*>(function)->SetupExtern(
++      SkeletonFrameCallbackThunk);
++  uint8_t* code = memory->TranslateVirtual(address);
++  xe::store_and_swap<uint32_t>(code + 0, 0x44000042);  // sc 2
++  xe::store_and_swap<uint32_t>(code + 4, 0x4E800020);  // blr
++  heap->Protect(address, 8, protection);
++  function->set_end_address(address + 4);
++  function->set_status(cpu::Symbol::Status::kDeclared);
++
++  skeleton_site_ = site;
++  skeleton_inject_bound_ = true;
++  skeleton_injected_frames_ = 0;
++  skeleton_inject_start_ = std::chrono::steady_clock::now();
++  XELOGI(
++      "NUI: skeleton injection (source \"{}\"): NuiSkeletonGetNextFrame at "
++      "{:08X}, runtime state at {:08X}, frame slots at +{:X} every {:X} with "
++      "the frame at +{:X}, frame callback thunk at {:08X} (pointer at {:08X}) "
++      "called from {:08X}, now bound to the host.",
++      source, site.get_next_frame, site.runtime_state, site.slot_ring_offset,
++      site.slot_stride, site.slot_frame_offset, site.frame_callback,
++      site.frame_callback_pointer, site.frame_callback_call);
++}
++
++uint32_t NuiState::OnSkeletonFrameReady(uint32_t frame_ptr) {
++  std::lock_guard<std::mutex> lock(skeleton_inject_mutex_);
++  if (!skeleton_inject_bound_) {
++    return 0;
++  }
++  uint32_t callback = 0;
++  if (IsGuestRangeReadable(skeleton_site_.frame_callback_pointer, 4)) {
++    callback =
++        xe::load_and_swap<uint32_t>(kernel_state_->memory()->TranslateVirtual(
++            skeleton_site_.frame_callback_pointer));
++  }
++  if (!skeleton_site_.IsSlotFrame(frame_ptr) ||
++      !IsGuestRangeWritable(frame_ptr, xe::nui::kSkeletonFrameBytes)) {
++    if (skeleton_injected_frames_ == 0) {
++      XELOGW(
++          "NUI: skeleton injection: the frame callback was handed {:08X}, "
++          "which is not one of the runtime's frame slots; frame left as the "
++          "tracker made it.",
++          frame_ptr);
++      skeleton_injected_frames_ = 1;
++    }
++    return callback;
++  }
++  uint8_t* frame = kernel_state_->memory()->TranslateVirtual(frame_ptr);
++  const uint64_t injected = skeleton_injected_frames_++;
++  // Every thirty seconds or so, what the title's own tracker had found in the
++  // frame that was replaced: slot:state/id/enrollment index/user index.
++  if (injected % 900 == 0) {
++    XELOGI(
++        "NUI: skeleton injection frame {} (runtime frame {}): replaced "
++        "tracker slots [{}]{}",
++        injected, xe::load_and_swap<uint32_t>(frame + 8),
++        DescribeSkeletonSlots(frame),
++        callback ? fmt::format(", then the runtime's callback {:08X}", callback)
++                 : std::string());
++  }
++  const double seconds =
++      std::chrono::duration<double>(std::chrono::steady_clock::now() -
++                                    skeleton_inject_start_)
++          .count();
++  const xe::nui::InjectedBody body = xe::nui::MakeTestPatternBody(seconds);
++  xe::nui::WriteInjectedSkeletons(frame, &body, 0);
++  return callback;
++}
++
+ X_HRESULT NuiState::HandleHudSkeletonFrame(uint32_t buffer_ptr,
+                                            uint32_t buffer_length) {
+   std::lock_guard<std::mutex> transition(runtime_transition_mutex_);
+diff --git a/src/xenia/kernel/xam/nui_state.h b/src/xenia/kernel/xam/nui_state.h
+index aadb712..f86b8b7 100644
+--- a/src/xenia/kernel/xam/nui_state.h
++++ b/src/xenia/kernel/xam/nui_state.h
+@@ -12,6 +12,7 @@
+ 
+ #include <array>
+ #include <atomic>
++#include <chrono>
+ #include <cstdint>
+ #include <functional>
+ #include <memory>
+@@ -26,6 +27,7 @@
+ #include "xenia/kernel/xam/nui_messages.h"
+ #include "xenia/kernel/xam/nui_runtime_state.h"
+ #include "xenia/kernel/xam/nui_tilt_status.h"
++#include "xenia/nui/nui_skeleton_site.h"
+ #include "xenia/nui/nui_system.h"
+ #include "xenia/xbox.h"
+ 
+@@ -98,6 +100,15 @@ class NuiState {
+   // kill loop and before the unload, and always after OnTitleTerminating().
+   void OnTitleTerminated();
+ 
++  // Skeleton injection (nui_skeleton_inject). The title runtime's frame
++  // callback thunk, bound to the host by BindSkeletonInjection, lands here
++  // with the NUI_SKELETON_FRAME its tracker has just filled, before the frame
++  // is published to NuiSkeletonGetNextFrame and copied into the HUD message
++  // 0x2B002. Rewrites the frame's skeletons and returns the guest function the
++  // thunk would have called through the runtime's callback pointer, 0 when
++  // that pointer is null.
++  uint32_t OnSkeletonFrameReady(uint32_t frame_ptr);
++
+   // Handles an app 0xFE message in the 0x0002Bxxx or 0x0002Cxxx range, or one
+   // of the two identity I/O requests in the 0x0002Axxx range.
+   X_HRESULT DispatchNuiMessage(uint32_t message, uint32_t buffer_ptr,
+@@ -244,6 +255,12 @@ class NuiState {
+   // not touched here either.
+   void RestoreSkeletalTrackerReadback();
+ 
++  // Finds the title runtime's skeleton frame site by its code and binds the
++  // frame callback thunk to the host, when nui_skeleton_inject names a
++  // source. Once per title; every failure is logged and leaves the title's
++  // own tracker in charge.
++  void BindSkeletonInjection();
++
+   X_HRESULT HandleCameraKeepAlive(uint32_t buffer_ptr, uint32_t buffer_length);
+   X_HRESULT HandleHudInitialize(uint32_t buffer_ptr, uint32_t buffer_length);
+   X_HRESULT HandleHudSkeletonFrame(uint32_t buffer_ptr, uint32_t buffer_length);
+@@ -366,6 +383,15 @@ class NuiState {
+   bool guide_hand_valid_ = false;
+   float guide_hand_x_ = 0.0f;
+   float guide_hand_y_ = 0.0f;
++
++  // Skeleton injection: bound once per title, and the thunk stays bound for
++  // as long as the title's code does.
++  std::mutex skeleton_inject_mutex_;
++  bool skeleton_inject_tried_ = false;
++  bool skeleton_inject_bound_ = false;
++  xe::nui::SkeletonFrameSite skeleton_site_;
++  uint64_t skeleton_injected_frames_ = 0;
++  std::chrono::steady_clock::time_point skeleton_inject_start_;
+ };
+ 
+ }  // namespace xam
+diff --git a/src/xenia/nui/nui_flags.cc b/src/xenia/nui/nui_flags.cc
+index 86419a6..47d41c4 100644
+--- a/src/xenia/nui/nui_flags.cc
++++ b/src/xenia/nui/nui_flags.cc
+@@ -54,6 +54,13 @@ DEFINE_string(nui_pipe, "",
+               "process writes live .xdepth frames into, for --nui=pipe.",
+               "Kinect");
+ 
++DEFINE_string(nui_skeleton_inject, "",
++              "Replace the skeletons a Kinect title's own tracker fits with "
++              "ones xenia supplies, at the title runtime's frame callback. "
++              "\"test\" injects a synthetic swaying, jumping test figure; "
++              "empty is off.",
++              "Kinect");
++
+ DEFINE_bool(nui_guide_gesture, true,
+             "Watch the skeletons a Kinect title hands xam for the Kinect Guide "
+             "gesture, the left arm held still out to the side and down at "
+diff --git a/src/xenia/nui/nui_flags.h b/src/xenia/nui/nui_flags.h
+index 52dd1f6..20e72a7 100644
+--- a/src/xenia/nui/nui_flags.h
++++ b/src/xenia/nui/nui_flags.h
+@@ -23,6 +23,7 @@ DECLARE_bool(nui_show_depth_preview);
+ DECLARE_string(nui_record);
+ DECLARE_string(nui_replay);
+ DECLARE_string(nui_pipe);
++DECLARE_string(nui_skeleton_inject);
+ DECLARE_bool(nui_guide_gesture);
+ DECLARE_int32(nui_guide_angle_min);
+ DECLARE_int32(nui_guide_angle_max);
+diff --git a/src/xenia/nui/nui_skeleton_inject.cc b/src/xenia/nui/nui_skeleton_inject.cc
+new file mode 100644
+index 0000000..2f2ad93
+--- /dev/null
++++ b/src/xenia/nui/nui_skeleton_inject.cc
+@@ -0,0 +1,126 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/nui/nui_skeleton_inject.h"
++
++#include <cmath>
++#include <cstring>
++
++namespace xe {
++namespace nui {
++
++namespace {
++
++void StoreU32(uint8_t* at, uint32_t value) {
++  at[0] = uint8_t(value >> 24);
++  at[1] = uint8_t(value >> 16);
++  at[2] = uint8_t(value >> 8);
++  at[3] = uint8_t(value);
++}
++
++void StoreF32(uint8_t* at, float value) {
++  uint32_t bits;
++  std::memcpy(&bits, &value, sizeof(bits));
++  StoreU32(at, bits);
++}
++
++void StorePoint(uint8_t* at, const InjectedJoint& joint) {
++  StoreF32(at + 0, joint.x);
++  StoreF32(at + 4, joint.y);
++  StoreF32(at + 8, joint.z);
++  StoreF32(at + 12, 1.0f);
++}
++
++constexpr size_t kEnrollmentIndexOffset = 0x08;
++constexpr size_t kIdentityWordsBytes = 8;
++constexpr size_t kPositionOffset = 0x10;
++constexpr size_t kJointPositionsOffset = 0x20;
++constexpr size_t kJointStatesOffset = 0x160;
++
++void EmptySlot(uint8_t* skeleton) {
++  uint8_t identity[kIdentityWordsBytes];
++  std::memcpy(identity, skeleton + kEnrollmentIndexOffset, sizeof(identity));
++  std::memset(skeleton, 0, kInjectSkeletonDataBytes);
++  std::memcpy(skeleton + kEnrollmentIndexOffset, identity, sizeof(identity));
++}
++
++// The figure's joints relative to its hip centre, in metres, standing upright
++// and facing the sensor with its arms a little away from its sides.
++constexpr float kRestPose[kInjectJointCount][3] = {
++    {0.00f, 0.00f, 0.00f},     // hip centre
++    {0.00f, 0.10f, 0.00f},     // spine
++    {0.00f, 0.45f, 0.00f},     // shoulder centre
++    {0.00f, 0.62f, 0.00f},     // head
++    {-0.18f, 0.42f, 0.00f},    // shoulder left
++    {-0.30f, 0.18f, 0.00f},    // elbow left
++    {-0.34f, -0.05f, 0.00f},   // wrist left
++    {-0.35f, -0.12f, 0.00f},   // hand left
++    {0.18f, 0.42f, 0.00f},     // shoulder right
++    {0.30f, 0.18f, 0.00f},     // elbow right
++    {0.34f, -0.05f, 0.00f},    // wrist right
++    {0.35f, -0.12f, 0.00f},    // hand right
++    {-0.09f, -0.05f, 0.00f},   // hip left
++    {-0.10f, -0.45f, 0.00f},   // knee left
++    {-0.10f, -0.83f, 0.00f},   // ankle left
++    {-0.10f, -0.88f, -0.08f},  // foot left
++    {0.09f, -0.05f, 0.00f},    // hip right
++    {0.10f, -0.45f, 0.00f},    // knee right
++    {0.10f, -0.83f, 0.00f},    // ankle right
++    {0.10f, -0.88f, -0.08f},   // foot right
++};
++
++}  // namespace
++
++void WriteInjectedSkeletons(uint8_t* frame, const InjectedBody* body,
++                            uint32_t slot) {
++  for (uint32_t n = 0; n < kInjectSkeletonCount; ++n) {
++    EmptySlot(frame + kInjectSkeletonDataOffset + n * kInjectSkeletonDataBytes);
++  }
++  if (!body || slot >= kInjectSkeletonCount || !body->tracking_id) {
++    return;
++  }
++  uint8_t* skeleton =
++      frame + kInjectSkeletonDataOffset + slot * kInjectSkeletonDataBytes;
++  StoreU32(skeleton + 0, kInjectSkeletonTracked);
++  StoreU32(skeleton + 4, body->tracking_id);
++  StorePoint(skeleton + kPositionOffset, body->position);
++  for (uint32_t n = 0; n < kInjectJointCount; ++n) {
++    StorePoint(skeleton + kJointPositionsOffset + n * 16, body->joints[n]);
++    StoreU32(skeleton + kJointStatesOffset + n * 4,
++             body->joints[n].tracking_state);
++  }
++}
++
++InjectedBody MakeTestPatternBody(double seconds) {
++  constexpr double kPi = 3.14159265358979323846;
++  constexpr double kSwayPeriod = 6.0, kSwayAmplitude = 0.35;
++  constexpr double kJumpPeriod = 4.0, kJumpLength = 0.5, kJumpHeight = 0.25;
++  constexpr float kDistance = 2.2f;
++  const double sway =
++      kSwayAmplitude * std::sin(2.0 * kPi * seconds / kSwayPeriod);
++  // A parabola from take-off to landing in the first half second of each
++  // jump period.
++  const double in_jump = std::fmod(seconds, kJumpPeriod);
++  double lift = 0.0;
++  if (in_jump >= 0.0 && in_jump < kJumpLength) {
++    const double u = in_jump / kJumpLength;
++    lift = 4.0 * kJumpHeight * u * (1.0 - u);
++  }
++  InjectedBody body;
++  for (uint32_t n = 0; n < kInjectJointCount; ++n) {
++    body.joints[n] = {static_cast<float>(kRestPose[n][0] + sway),
++                      static_cast<float>(kRestPose[n][1] + lift),
++                      kRestPose[n][2] + kDistance, kInjectJointTracked};
++  }
++  body.position = body.joints[kInjectHipCenter];
++  return body;
++}
++
++}  // namespace nui
++}  // namespace xe
+diff --git a/src/xenia/nui/nui_skeleton_inject.h b/src/xenia/nui/nui_skeleton_inject.h
+new file mode 100644
+index 0000000..dc0e200
+--- /dev/null
++++ b/src/xenia/nui/nui_skeleton_inject.h
+@@ -0,0 +1,100 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_NUI_NUI_SKELETON_INJECT_H_
++#define XENIA_NUI_NUI_SKELETON_INJECT_H_
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++
++namespace xe {
++namespace nui {
++
++// The NUI_SKELETON_FRAME layout of runtime 2.0.11775, big-endian:
++//   +0x00 u64 timestamp   +0x08 u32 frame number   +0x0C u32 flags
++//   +0x10 floor clip plane (4 floats)   +0x20 normal to gravity (4 floats)
++//   +0x30 six 0x1C0-byte NUI_SKELETON_DATA
++// and in each skeleton:
++//   +0x000 tracking state   +0x004 tracking id
++//   +0x008 enrollment index +0x00C user index   (written by the identity pass)
++//   +0x010 position (4 floats)   +0x020 twenty joint positions (4 floats each)
++//   +0x160 twenty joint tracking states   +0x1B0 quality flags
++inline constexpr size_t kInjectSkeletonDataOffset = 0x30;
++inline constexpr size_t kInjectSkeletonDataBytes = 0x1C0;
++inline constexpr uint32_t kInjectSkeletonCount = 6;
++inline constexpr uint32_t kInjectJointCount = 20;
++
++inline constexpr uint32_t kInjectSkeletonNotTracked = 0;
++inline constexpr uint32_t kInjectSkeletonTracked = 2;
++inline constexpr uint32_t kInjectJointNotTracked = 0;
++inline constexpr uint32_t kInjectJointInferred = 1;
++inline constexpr uint32_t kInjectJointTracked = 2;
++
++// Joint order of the public NUI skeleton.
++enum InjectJoint : uint32_t {
++  kInjectHipCenter = 0,
++  kInjectSpine,
++  kInjectShoulderCenter,
++  kInjectHead,
++  kInjectShoulderLeft,
++  kInjectElbowLeft,
++  kInjectWristLeft,
++  kInjectHandLeft,
++  kInjectShoulderRight,
++  kInjectElbowRight,
++  kInjectWristRight,
++  kInjectHandRight,
++  kInjectHipLeft,
++  kInjectKneeLeft,
++  kInjectAnkleLeft,
++  kInjectFootLeft,
++  kInjectHipRight,
++  kInjectKneeRight,
++  kInjectAnkleRight,
++  kInjectFootRight,
++};
++
++// A joint in the sensor's camera space, in metres: x to the right of the
++// image the sensor sees mirrored (a facing player's right hand has the larger
++// x), y up, z away from the sensor.
++struct InjectedJoint {
++  float x = 0.0f;
++  float y = 0.0f;
++  float z = 0.0f;
++  uint32_t tracking_state = kInjectJointNotTracked;
++};
++
++struct InjectedBody {
++  // Never 0: the runtime and the title read id 0 as "no skeleton".
++  uint32_t tracking_id = 1;
++  // The skeleton's own position; the runtime's tracker puts it near the hip.
++  InjectedJoint position;
++  std::array<InjectedJoint, kInjectJointCount> joints;
++};
++
++// Rewrites the six skeleton slots of a NUI_SKELETON_FRAME in place. With a
++// body, `slot` holds it as tracked and every other slot is emptied; without
++// one, every slot is emptied. An emptied slot reads as the runtime's own
++// publisher leaves an unused one, all zero, except that in every slot the
++// enrollment index and user index words are kept as the runtime wrote them,
++// since they are the identity pass's and not the tracker's. The frame header
++// (timestamp, frame number, flags, floor plane, gravity) is not touched.
++void WriteInjectedSkeletons(uint8_t* frame, const InjectedBody* body,
++                            uint32_t slot);
++
++// A synthetic test body for checking the injection path without a camera: a
++// standing figure 2.2 m from the sensor that sways 0.35 m to either side over
++// six seconds and jumps 0.25 m every four. It is not anyone's pose.
++InjectedBody MakeTestPatternBody(double seconds);
++
++}  // namespace nui
++}  // namespace xe
++
++#endif  // XENIA_NUI_NUI_SKELETON_INJECT_H_
+diff --git a/src/xenia/nui/nui_skeleton_site.cc b/src/xenia/nui/nui_skeleton_site.cc
+new file mode 100644
+index 0000000..192c746
+--- /dev/null
++++ b/src/xenia/nui/nui_skeleton_site.cc
+@@ -0,0 +1,288 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/nui/nui_skeleton_site.h"
++
++#include <algorithm>
++#include <vector>
++
++namespace xe {
++namespace nui {
++
++namespace {
++
++// Instruction fields, PowerPC numbering from the most significant bit.
++uint32_t Opcode(uint32_t w) { return w >> 26; }
++uint32_t FieldD(uint32_t w) { return (w >> 21) & 31; }
++uint32_t FieldA(uint32_t w) { return (w >> 16) & 31; }
++uint32_t Imm16(uint32_t w) { return w & 0xFFFF; }
++int32_t Simm16(uint32_t w) { return static_cast<int16_t>(w & 0xFFFF); }
++
++constexpr uint32_t kOpMulli = 7;
++constexpr uint32_t kOpCmpli = 10;
++constexpr uint32_t kOpAddi = 14;
++constexpr uint32_t kOpAddis = 15;
++constexpr uint32_t kOpBranch = 18;
++constexpr uint32_t kOpOri = 24;
++constexpr uint32_t kOpLwz = 32;
++
++constexpr uint32_t kMflrR12 = 0x7D8802A6;
++constexpr uint32_t kLiR5FrameBytes = 0x38A00000 | kSkeletonFrameBytes;
++constexpr uint32_t kBctr = 0x4E800420;
++// How far from its prologue NuiSkeletonGetNextFrame does the things that
++// identify it; the function is 0x1F0 bytes long in 4D5308ED.
++constexpr uint32_t kGetNextFrameSpan = 0x280;
++// The callback pointer lives in the runtime's state block, 0x28EC bytes in
++// for 4D5308ED; anything beyond this is not that block.
++constexpr uint32_t kRuntimeStateSpan = 0x10000;
++
++class Code {
++ public:
++  Code(const uint8_t* image, size_t size, uint32_t base)
++      : image_(image), words_(size / 4), base_(base) {}
++  size_t words() const { return words_; }
++  uint32_t address(size_t index) const {
++    return base_ + static_cast<uint32_t>(index * 4);
++  }
++  uint32_t at(size_t index) const {
++    const uint8_t* p = image_ + index * 4;
++    return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 |
++           uint32_t(p[3]);
++  }
++
++ private:
++  const uint8_t* image_;
++  size_t words_;
++  uint32_t base_;
++};
++
++// The signature PS5X360 uses for NuiSkeletonGetNextFrame (title 4E4D084E):
++// a function that copies one 0xAB0-byte frame, clamps its wait to 8000 ms,
++// turns milliseconds into 100 ns units and can answer 0x8007048F ("device
++// not connected"). Registers differ between builds, so only opcodes and
++// constants are compared.
++std::vector<size_t> FindGetNextFrame(const Code& code) {
++  std::vector<size_t> found;
++  const size_t span = kGetNextFrameSpan / 4;
++  for (size_t i = 0; i < code.words(); ++i) {
++    if (code.at(i) != kLiR5FrameBytes) {
++      continue;
++    }
++    size_t start = i;
++    while (start > 0 && i - start < span && code.at(start) != kMflrR12) {
++      --start;
++    }
++    if (code.at(start) != kMflrR12) {
++      continue;
++    }
++    bool wait_limit = false, to_ticks = false, not_connected = false;
++    for (size_t n = start; n < start + span && n < code.words(); ++n) {
++      const uint32_t w = code.at(n);
++      wait_limit |=
++          Opcode(w) == kOpCmpli && FieldA(w) == 3 && Imm16(w) == 0x1F40;
++      to_ticks |= Opcode(w) == kOpMulli && Imm16(w) == 0xD8F0;
++      not_connected |= Opcode(w) == kOpOri && Imm16(w) == 0x048F;
++    }
++    if (wait_limit && to_ticks && not_connected &&
++        (found.empty() || found.back() != start)) {
++      found.push_back(start);
++    }
++  }
++  return found;
++}
++
++// Reads g and the slot geometry out of NuiSkeletonGetNextFrame:
++//   lis rA, hi ; ... ; addi rG, rA, lo           g = hi << 16 + lo
++//   addi rR, rG, ring ; mulli rI, rI, stride     slot = g + ring + i * stride
++//   li r5, 0xAB0 ; addi r4, rS, frame            source = slot + frame
++bool ReadGetNextFrame(const Code& code, size_t start, SkeletonFrameSite* site) {
++  const size_t end = std::min(code.words(), start + kGetNextFrameSpan / 4);
++  uint32_t g_register = 32;
++  for (size_t n = start; n < end && g_register == 32; ++n) {
++    const uint32_t lis = code.at(n);
++    if (Opcode(lis) != kOpAddis || FieldA(lis) != 0) {
++      continue;
++    }
++    for (size_t k = n + 1; k < end && k <= n + 8; ++k) {
++      const uint32_t addi = code.at(k);
++      if (Opcode(addi) == kOpAddi && FieldA(addi) == FieldD(lis)) {
++        site->runtime_state = (Imm16(lis) << 16) + Simm16(addi);
++        g_register = FieldD(addi);
++        break;
++      }
++    }
++  }
++  if (g_register == 32) {
++    return false;
++  }
++  bool ring = false, frame = false;
++  for (size_t n = start; n < end; ++n) {
++    const uint32_t w = code.at(n);
++    if (!ring && Opcode(w) == kOpMulli && Simm16(w) > 0) {
++      for (size_t k = n; k > start && k + 4 > n; --k) {
++        const uint32_t addi = code.at(k - 1);
++        if (Opcode(addi) == kOpAddi && FieldA(addi) == g_register &&
++            Simm16(addi) > 0) {
++          site->slot_ring_offset = Imm16(addi);
++          site->slot_stride = Imm16(w);
++          ring = true;
++          break;
++        }
++      }
++    }
++    if (!frame && w == kLiR5FrameBytes) {
++      for (size_t k = n + 1; k < end && k <= n + 4; ++k) {
++        const uint32_t addi = code.at(k);
++        if (Opcode(addi) == kOpAddi && FieldD(addi) == 4 && Simm16(addi) >= 0) {
++          site->slot_frame_offset = Imm16(addi);
++          frame = true;
++          break;
++        }
++      }
++    }
++  }
++  return ring && frame &&
++         site->slot_frame_offset + kSkeletonFrameBytes <= site->slot_stride;
++}
++
++// lis rX, hi ; lwz rY, lo(rX) ; cmplwi crN, rY, 0 ; beqlr crN ; mtctr rY ;
++// bctr, calling through a pointer inside the runtime's state block.
++bool IsFrameCallbackThunk(const Code& code, size_t i, uint32_t runtime_state,
++                          uint32_t* pointer) {
++  if (i + 6 > code.words()) {
++    return false;
++  }
++  const uint32_t lis = code.at(i), lwz = code.at(i + 1), cmp = code.at(i + 2),
++                 beqlr = code.at(i + 3), mtctr = code.at(i + 4),
++                 bctr = code.at(i + 5);
++  if (Opcode(lis) != kOpAddis || FieldA(lis) != 0 || Opcode(lwz) != kOpLwz ||
++      FieldA(lwz) != FieldD(lis) || bctr != kBctr) {
++    return false;
++  }
++  const uint32_t value = FieldD(lwz);
++  const uint32_t cr_field = FieldD(cmp) >> 2;
++  // cmplwi crN, rY, 0 is cmpli with L = 0.
++  if (Opcode(cmp) != kOpCmpli || (FieldD(cmp) & 3) != 0 ||
++      FieldA(cmp) != value || Imm16(cmp) != 0) {
++    return false;
++  }
++  // beqlr crN: bclr 12, 4 * N + 2.
++  if (beqlr != (0x4D800020 | (cr_field * 4 + 2) << 16)) {
++    return false;
++  }
++  // mtctr rY: mtspr 9, rY.
++  if (mtctr != (0x7C0903A6 | value << 21)) {
++    return false;
++  }
++  const uint32_t target = (Imm16(lis) << 16) + Simm16(lwz);
++  if (target < runtime_state || target - runtime_state >= kRuntimeStateSpan) {
++    return false;
++  }
++  *pointer = target;
++  return true;
++}
++
++std::vector<size_t> FindCallsTo(const Code& code, uint32_t target) {
++  std::vector<size_t> calls;
++  for (size_t i = 0; i < code.words(); ++i) {
++    const uint32_t w = code.at(i);
++    // bl: I-form, AA = 0, LK = 1.
++    if (Opcode(w) != kOpBranch || (w & 3) != 1) {
++      continue;
++    }
++    int32_t offset = static_cast<int32_t>(w & 0x03FFFFFC);
++    if (offset & 0x02000000) {
++      offset -= 0x04000000;
++    }
++    if (code.address(i) + static_cast<uint32_t>(offset) == target) {
++      calls.push_back(i);
++    }
++  }
++  return calls;
++}
++
++}  // namespace
++
++bool SkeletonFrameSite::IsSlotFrame(uint32_t frame) const {
++  for (uint32_t slot = 0; slot < kSkeletonFrameSlotCount; ++slot) {
++    if (frame == runtime_state + slot_ring_offset + slot * slot_stride +
++                     slot_frame_offset) {
++      return true;
++    }
++  }
++  return false;
++}
++
++std::string_view SkeletonSiteStatusName(SkeletonSiteStatus status) {
++  switch (status) {
++    case SkeletonSiteStatus::kFound:
++      return "found";
++    case SkeletonSiteStatus::kNoGetNextFrame:
++      return "no NuiSkeletonGetNextFrame";
++    case SkeletonSiteStatus::kAmbiguousGetNextFrame:
++      return "more than one NuiSkeletonGetNextFrame";
++    case SkeletonSiteStatus::kUnreadableGetNextFrame:
++      return "NuiSkeletonGetNextFrame does not name its state block and slots";
++    case SkeletonSiteStatus::kNoFrameCallback:
++      return "no frame callback thunk into the state block";
++    case SkeletonSiteStatus::kAmbiguousFrameCallback:
++      return "more than one frame callback thunk into the state block";
++    case SkeletonSiteStatus::kFrameCallbackNotCalledOnce:
++      return "the frame callback thunk is not called exactly once";
++  }
++  return "unknown";
++}
++
++SkeletonSiteStatus FindSkeletonFrameSite(const uint8_t* image, size_t size,
++                                         uint32_t base, SkeletonFrameSite* out,
++                                         size_t* found_count) {
++  const Code code(image, size, base);
++  size_t unused_count;
++  size_t& count = found_count ? *found_count : unused_count;
++  SkeletonFrameSite site;
++
++  const std::vector<size_t> get_next_frame = FindGetNextFrame(code);
++  count = get_next_frame.size();
++  if (get_next_frame.size() != 1) {
++    return get_next_frame.empty() ? SkeletonSiteStatus::kNoGetNextFrame
++                                  : SkeletonSiteStatus::kAmbiguousGetNextFrame;
++  }
++  site.get_next_frame = code.address(get_next_frame[0]);
++  if (!ReadGetNextFrame(code, get_next_frame[0], &site)) {
++    return SkeletonSiteStatus::kUnreadableGetNextFrame;
++  }
++
++  std::vector<size_t> thunks;
++  for (size_t i = 0; i < code.words(); ++i) {
++    uint32_t pointer;
++    if (IsFrameCallbackThunk(code, i, site.runtime_state, &pointer)) {
++      thunks.push_back(i);
++      site.frame_callback_pointer = pointer;
++    }
++  }
++  count = thunks.size();
++  if (thunks.size() != 1) {
++    return thunks.empty() ? SkeletonSiteStatus::kNoFrameCallback
++                          : SkeletonSiteStatus::kAmbiguousFrameCallback;
++  }
++  site.frame_callback = code.address(thunks[0]);
++
++  const std::vector<size_t> calls = FindCallsTo(code, site.frame_callback);
++  count = calls.size();
++  if (calls.size() != 1) {
++    return SkeletonSiteStatus::kFrameCallbackNotCalledOnce;
++  }
++  site.frame_callback_call = code.address(calls[0]);
++  count = 1;
++  *out = site;
++  return SkeletonSiteStatus::kFound;
++}
++
++}  // namespace nui
++}  // namespace xe
+diff --git a/src/xenia/nui/nui_skeleton_site.h b/src/xenia/nui/nui_skeleton_site.h
+new file mode 100644
+index 0000000..4b24d6b
+--- /dev/null
++++ b/src/xenia/nui/nui_skeleton_site.h
+@@ -0,0 +1,88 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_NUI_NUI_SKELETON_SITE_H_
++#define XENIA_NUI_NUI_SKELETON_SITE_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <string_view>
++
++namespace xe {
++namespace nui {
++
++// Where a title's statically linked NUI runtime builds and hands out its
++// skeleton frames, found in the title's code by what the code does rather
++// than by fixed addresses, so that two builds of one title (two disc
++// revisions of 4D5308ED differ by up to 0x1000 bytes in this region) are both
++// found. All addresses are guest virtual addresses.
++//
++// The runtime fills one of two 0xAE0-byte slots per depth frame; a slot holds
++// a state word at +0 and the 0xAB0-byte NUI_SKELETON_FRAME at +0x20. Once the
++// frame is complete, and before the slot is published to
++// NuiSkeletonGetNextFrame and copied to the HUD message 0x2B002, the producer
++// calls a small thunk that calls through a function pointer in the runtime's
++// state block when it is not null:
++//
++//   lis rX, hi ; lwz rY, lo(rX) ; cmplwi crN, rY, 0 ; beqlr crN ;
++//   mtctr rY ; bctr
++//
++// That thunk is the point at which a skeleton supplied by the host can stand
++// in for the tracker's, for every consumer of the frame at once.
++struct SkeletonFrameSite {
++  // NuiSkeletonGetNextFrame(wait_ms, NUI_SKELETON_FRAME*).
++  uint32_t get_next_frame = 0;
++  // The runtime's state block (g), as NuiSkeletonGetNextFrame addresses it.
++  uint32_t runtime_state = 0;
++  // Offset of the slot ring in g, the size of one slot and the offset of the
++  // NUI_SKELETON_FRAME in a slot, as NuiSkeletonGetNextFrame reads them.
++  uint32_t slot_ring_offset = 0;
++  uint32_t slot_stride = 0;
++  uint32_t slot_frame_offset = 0;
++  // The thunk that hands the finished frame to the optional callback, the
++  // pointer it calls through and the one call to it in the frame producer.
++  uint32_t frame_callback = 0;
++  uint32_t frame_callback_pointer = 0;
++  uint32_t frame_callback_call = 0;
++
++  // Returns whether frame is the NUI_SKELETON_FRAME of one of the two slots.
++  bool IsSlotFrame(uint32_t frame) const;
++};
++
++enum class SkeletonSiteStatus {
++  kFound,
++  kNoGetNextFrame,
++  kAmbiguousGetNextFrame,
++  kUnreadableGetNextFrame,
++  kNoFrameCallback,
++  kAmbiguousFrameCallback,
++  kFrameCallbackNotCalledOnce,
++};
++
++std::string_view SkeletonSiteStatusName(SkeletonSiteStatus status);
++
++// Number of NUI_SKELETON_FRAME slots the runtime alternates between.
++inline constexpr uint32_t kSkeletonFrameSlotCount = 2;
++// sizeof(NUI_SKELETON_FRAME) in this runtime; NuiSkeletonGetNextFrame copies
++// exactly this many bytes.
++inline constexpr uint32_t kSkeletonFrameBytes = 0xAB0;
++
++// Searches the loaded image (code is big-endian PowerPC, image[0] at base)
++// for the site above. Every step requires exactly one match and the result
++// says which step failed otherwise; nothing is guessed. found_count, when
++// given, receives the number of candidates of the step that decided the
++// result.
++SkeletonSiteStatus FindSkeletonFrameSite(const uint8_t* image, size_t size,
++                                         uint32_t base, SkeletonFrameSite* out,
++                                         size_t* found_count = nullptr);
++
++}  // namespace nui
++}  // namespace xe
++
++#endif  // XENIA_NUI_NUI_SKELETON_SITE_H_
+diff --git a/src/xenia/nui/testing/nui_skeleton_site_test.cc b/src/xenia/nui/testing/nui_skeleton_site_test.cc
+new file mode 100644
+index 0000000..0561d90
+--- /dev/null
++++ b/src/xenia/nui/testing/nui_skeleton_site_test.cc
+@@ -0,0 +1,265 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/nui/nui_skeleton_site.h"
++
++#include <algorithm>
++#include <cstring>
++#include <vector>
++
++#include "third_party/catch/include/catch.hpp"
++#include "xenia/nui/nui_skeleton_inject.h"
++
++namespace xe {
++namespace nui {
++namespace test {
++
++namespace {
++
++constexpr uint32_t kBase = 0x82000000;
++
++// A hand-assembled stand-in for the parts of a title image the finder reads,
++// with the instruction sequences of title 4D5308ED's NUI runtime 2.0.11775
++// (registers and immediates as they are there).
++class FakeImage {
++ public:
++  FakeImage() : bytes_(0x4000, 0) {}
++
++  uint32_t Put(uint32_t offset, std::initializer_list<uint32_t> words) {
++    for (uint32_t w : words) {
++      bytes_[offset + 0] = uint8_t(w >> 24);
++      bytes_[offset + 1] = uint8_t(w >> 16);
++      bytes_[offset + 2] = uint8_t(w >> 8);
++      bytes_[offset + 3] = uint8_t(w);
++      offset += 4;
++    }
++    return offset;
++  }
++
++  // NuiSkeletonGetNextFrame, cut down to what identifies it and what it says
++  // about the state block at 0x83896510 and its slots.
++  void PutGetNextFrame(uint32_t offset) {
++    Put(offset, {
++                    0x7D8802A6,  // mflr r12
++                    0x3D608389,  // lis r11, 0x8389
++                    0x3B800000,  // li r28, 0
++                    0x3BEB6510,  // addi r31, r11, 0x6510
++                    0x2B031F40,  // cmplwi cr6, r3, 0x1F40
++                    0x1D4BD8F0,  // mulli r10, r11, -10000
++                    0x817F0A60,  // lwz r11, 0xA60(r31)
++                    0x395F0A70,  // addi r10, r31, 0xA70
++                    0x1D6B0AE0,  // mulli r11, r11, 0xAE0
++                    0x7FCB5214,  // add r30, r11, r10
++                    0x38A00AB0,  // li r5, 0xAB0
++                    0x389E0020,  // addi r4, r30, 0x20
++                    0x616A048F,  // ori r10, r11, 0x48F
++                    0x4E800020,  // blr
++                });
++  }
++
++  // if (*(g + 0x28EC)) (*(g + 0x28EC))(frame)
++  void PutThunk(uint32_t offset, uint16_t lwz_offset = 0x8DFC) {
++    Put(offset, {
++                    0x3D60838A,                // lis r11, 0x838A
++                    0x816B0000u | lwz_offset,  // lwz r11, -0x7204(r11)
++                    0x2B0B0000,                // cmplwi cr6, r11, 0
++                    0x4D9A0020,                // beqlr cr6
++                    0x7D6903A6,                // mtctr r11
++                    0x4E800420,                // bctr
++                });
++  }
++
++  void PutCall(uint32_t offset, uint32_t target_offset) {
++    const uint32_t delta = (target_offset - offset) & 0x03FFFFFC;
++    Put(offset, {0x48000001u | delta});
++  }
++
++  SkeletonSiteStatus Find(SkeletonFrameSite* site, size_t* count = nullptr) {
++    return FindSkeletonFrameSite(bytes_.data(), bytes_.size(), kBase, site,
++                                 count);
++  }
++
++ private:
++  std::vector<uint8_t> bytes_;
++};
++
++}  // namespace
++
++TEST_CASE("The skeleton frame site is read out of the runtime's own code",
++          "[nui][skeleton]") {
++  FakeImage image;
++  image.PutGetNextFrame(0x100);
++  image.PutThunk(0x400);
++  image.PutCall(0x800, 0x400);
++  SkeletonFrameSite site;
++  REQUIRE(image.Find(&site) == SkeletonSiteStatus::kFound);
++  CHECK(site.get_next_frame == kBase + 0x100);
++  CHECK(site.runtime_state == 0x83896510);
++  CHECK(site.slot_ring_offset == 0xA70);
++  CHECK(site.slot_stride == 0xAE0);
++  CHECK(site.slot_frame_offset == 0x20);
++  CHECK(site.frame_callback == kBase + 0x400);
++  CHECK(site.frame_callback_pointer == 0x83898DFC);
++  CHECK(site.frame_callback_call == kBase + 0x800);
++
++  // The two frames the producer alternates between, and nothing else.
++  CHECK(site.IsSlotFrame(0x83896510 + 0xA70 + 0x20));
++  CHECK(site.IsSlotFrame(0x83896510 + 0xA70 + 0xAE0 + 0x20));
++  CHECK_FALSE(site.IsSlotFrame(0x83896510 + 0xA70));
++  CHECK_FALSE(site.IsSlotFrame(0x83896510 + 0xA70 + 2 * 0xAE0 + 0x20));
++}
++
++TEST_CASE("Every step of the skeleton site search needs exactly one match",
++          "[nui][skeleton]") {
++  SkeletonFrameSite site;
++  size_t count = 0;
++  {
++    FakeImage image;
++    image.PutThunk(0x400);
++    image.PutCall(0x800, 0x400);
++    CHECK(image.Find(&site, &count) == SkeletonSiteStatus::kNoGetNextFrame);
++    CHECK(count == 0);
++  }
++  {
++    FakeImage image;
++    image.PutGetNextFrame(0x100);
++    image.PutGetNextFrame(0x200);
++    image.PutThunk(0x400);
++    image.PutCall(0x800, 0x400);
++    CHECK(image.Find(&site, &count) ==
++          SkeletonSiteStatus::kAmbiguousGetNextFrame);
++    CHECK(count == 2);
++  }
++  {
++    // A thunk that calls through a pointer far outside the state block is not
++    // the runtime's frame callback.
++    FakeImage image;
++    image.PutGetNextFrame(0x100);
++    image.PutThunk(0x400, 0x7FF0);
++    image.PutCall(0x800, 0x400);
++    CHECK(image.Find(&site) == SkeletonSiteStatus::kNoFrameCallback);
++  }
++  {
++    FakeImage image;
++    image.PutGetNextFrame(0x100);
++    image.PutThunk(0x400);
++    image.PutThunk(0x500);
++    image.PutCall(0x800, 0x400);
++    CHECK(image.Find(&site, &count) ==
++          SkeletonSiteStatus::kAmbiguousFrameCallback);
++    CHECK(count == 2);
++  }
++  {
++    FakeImage image;
++    image.PutGetNextFrame(0x100);
++    image.PutThunk(0x400);
++    CHECK(image.Find(&site, &count) ==
++          SkeletonSiteStatus::kFrameCallbackNotCalledOnce);
++    CHECK(count == 0);
++    image.PutCall(0x800, 0x400);
++    image.PutCall(0x900, 0x400);
++    CHECK(image.Find(&site, &count) ==
++          SkeletonSiteStatus::kFrameCallbackNotCalledOnce);
++    CHECK(count == 2);
++  }
++}
++
++namespace {
++
++uint32_t LoadU32(const uint8_t* at) {
++  return uint32_t(at[0]) << 24 | uint32_t(at[1]) << 16 | uint32_t(at[2]) << 8 |
++         uint32_t(at[3]);
++}
++
++float LoadF32(const uint8_t* at) {
++  const uint32_t bits = LoadU32(at);
++  float value;
++  std::memcpy(&value, &bits, sizeof(value));
++  return value;
++}
++
++uint8_t* Slot(std::vector<uint8_t>& frame, uint32_t n) {
++  return frame.data() + kInjectSkeletonDataOffset +
++         n * kInjectSkeletonDataBytes;
++}
++
++}  // namespace
++
++TEST_CASE("An injected body replaces the tracker's skeletons in place",
++          "[nui][skeleton]") {
++  std::vector<uint8_t> frame(kSkeletonFrameBytes, 0xCD);
++  const std::vector<uint8_t> header(frame.begin(),
++                                    frame.begin() + kInjectSkeletonDataOffset);
++  InjectedBody body = MakeTestPatternBody(0.0);
++  body.tracking_id = 7;
++  WriteInjectedSkeletons(frame.data(), &body, 1);
++
++  // The header is the runtime's.
++  CHECK(std::equal(header.begin(), header.end(), frame.begin()));
++  for (uint32_t n = 0; n < kInjectSkeletonCount; ++n) {
++    const uint8_t* skeleton = Slot(frame, n);
++    // The identity pass's two words survive in every slot.
++    CHECK(LoadU32(skeleton + 8) == 0xCDCDCDCD);
++    CHECK(LoadU32(skeleton + 12) == 0xCDCDCDCD);
++    if (n != 1) {
++      CHECK(LoadU32(skeleton) == kInjectSkeletonNotTracked);
++      CHECK(LoadU32(skeleton + 4) == 0);
++      CHECK(LoadU32(skeleton + 0x20) == 0);
++      CHECK(LoadU32(skeleton + 0x1B0) == 0);
++    }
++  }
++  const uint8_t* skeleton = Slot(frame, 1);
++  CHECK(LoadU32(skeleton) == kInjectSkeletonTracked);
++  CHECK(LoadU32(skeleton + 4) == 7);
++  CHECK(LoadF32(skeleton + 0x10 + 8) == Approx(2.2f));
++  const uint8_t* head = skeleton + 0x20 + kInjectHead * 16;
++  CHECK(LoadF32(head + 4) == Approx(body.joints[kInjectHead].y));
++  CHECK(LoadF32(head + 12) == 1.0f);
++  CHECK(LoadU32(skeleton + 0x160 + kInjectHandRight * 4) ==
++        kInjectJointTracked);
++  CHECK(LoadU32(skeleton + 0x1B0) == 0);
++}
++
++TEST_CASE("Without a body every skeleton slot is emptied", "[nui][skeleton]") {
++  std::vector<uint8_t> frame(kSkeletonFrameBytes, 0xCD);
++  WriteInjectedSkeletons(frame.data(), nullptr, 0);
++  for (uint32_t n = 0; n < kInjectSkeletonCount; ++n) {
++    CHECK(LoadU32(Slot(frame, n)) == kInjectSkeletonNotTracked);
++  }
++  // A body with no id is no body.
++  InjectedBody body = MakeTestPatternBody(0.0);
++  body.tracking_id = 0;
++  std::fill(frame.begin(), frame.end(), 0xCD);
++  WriteInjectedSkeletons(frame.data(), &body, 0);
++  CHECK(LoadU32(Slot(frame, 0)) == kInjectSkeletonNotTracked);
++}
++
++TEST_CASE("The test figure sways and jumps in front of the sensor",
++          "[nui][skeleton]") {
++  const InjectedBody rest = MakeTestPatternBody(0.0);
++  const InjectedBody right = MakeTestPatternBody(1.5);
++  const InjectedBody jump = MakeTestPatternBody(4.25);
++  CHECK(rest.joints[kInjectHipCenter].x == Approx(0.0f).margin(1e-6));
++  CHECK(right.joints[kInjectHipCenter].x == Approx(0.35f));
++  // A quarter of the sway period and a quarter of a jump in: the jump is at
++  // its top.
++  CHECK(jump.joints[kInjectHead].y - rest.joints[kInjectHead].y ==
++        Approx(0.25f));
++  CHECK(rest.joints[kInjectHandRight].x > rest.joints[kInjectHandLeft].x);
++  CHECK(rest.joints[kInjectHead].y > rest.joints[kInjectFootLeft].y);
++  for (const InjectedJoint& joint : rest.joints) {
++    CHECK(joint.z > 2.0f);
++    CHECK(joint.tracking_state == kInjectJointTracked);
++  }
++  CHECK(rest.tracking_id != 0);
++}
++
++}  // namespace test
++}  // namespace nui
++}  // namespace xe
+-- 
+2.52.0.windows.1
+
