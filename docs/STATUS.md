@@ -91,6 +91,8 @@ Last update: 2026-11-12. Current phase: **0 (feasibility)**. Emulator code exist
     - An end-to-end latency measurement, glass to title skeleton.
 - In the same test the camera dropped to 23.92 fps under auto exposure (evening light, subject at the back of the room). 30 Hz needs more light on the player.
 
+- **Hands-free harness re-verified (2026-11-12)** on the committed fork build with `skeleton_harness.py --case synthetic --seconds 420`: PASS on every check (bound, fresh with 0 fall-backs, one tracking id in 100% of 4,044 logged frames, direction corr +1.00 at 1 px error, lateral ±0.35 m as scripted, 12 jump rises for 11 scripted, no pause screen). Fork unit tests: 88 cases, 37,279 assertions pass. A first attempt failed only because the harness did not resolve a relative `--out` path (the scripted source crashed on `truth.csv`); fixed.
+
 ## Findings that change the plan
 - Kinect titles get depth and colour through the kernel export `PsCamDeviceRequest`. Their own statically linked SDK then tracks the skeleton on the guest GPU, and XAM has no frame-delivery export.
 - The first guest component is therefore a **virtual `PsCamDeviceRequest` driver**, serving raw 11-bit disparity plus Bayer colour, following the contract documented in Canary PR #1274. Details in PRIOR_ART §2 and NUI_LAYER.
